@@ -1,0 +1,11 @@
+{
+  "rules": [
+    "Flutter Web only — no native mobile targets in this repo",
+    "Use Google Fonts via google_fonts package — no custom font files",
+    "All navigation via GoRouter",
+    "No hardcoded colors — use AppTheme constants only",
+    "No hardcoded strings — extract to constants file",
+    "Responsive design required — test at 375px, 768px, 1440px widths",
+    "No external API calls from frontend — static site only at this stage"
+  ]
+}
