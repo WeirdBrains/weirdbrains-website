@@ -8,7 +8,7 @@ RUN flutter build web --release --base-href /
 
 # Stage 2: Serve with nginx on port 8080 (Cloud Run requirement)
 FROM nginx:alpine
-RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=builder /app/build/web /usr/share/nginx/html
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]
