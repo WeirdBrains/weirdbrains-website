@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import 'scroll_indicator.dart';
 
 class HeroSection extends StatelessWidget {
   const HeroSection({super.key});
@@ -33,7 +34,8 @@ class HeroSection extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 48),
-          // TODO: Add CTA button / scroll indicator
+          const SizedBox(height: 24),
+          const ScrollIndicator(),
         ],
       ),
     );
