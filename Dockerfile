@@ -6,11 +6,10 @@ RUN flutter pub get
 COPY . .
 RUN flutter build web --release --base-href /
 
-# Stage 2: Serve with nginx on dynamic PORT (Cloud Run compatible)
+# Stage 2: Serve with nginx (Cloud Run hardcodes PORT=8080)
 FROM nginx:alpine
-RUN apk add --no-cache gettext
-COPY nginx.conf.template /etc/nginx/nginx.conf.template
+COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=builder /app/build/web /usr/share/nginx/html
 
-# Use envsubst to substitute PORT at runtime, then start nginx
-CMD ["/bin/sh", "-c", "envsubst '${PORT}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx -g 'daemon off;'"]
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
