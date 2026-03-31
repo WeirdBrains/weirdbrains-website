@@ -52,12 +52,11 @@ jobs:
           image: ${{ env.REGISTRY }}/${{ env.SERVICE }}:${{ github.sha }}
           flags: >
             --allow-unauthenticated
-            --memory=256Mi
+            --memory=512Mi
             --cpu=1
             --min-instances=0
             --max-instances=5
             --port=8080
-            --execution-environment=gen2
 
       - name: Show deployed URL
         run: echo "Live at ${{ steps.deploy.outputs.url }}"
