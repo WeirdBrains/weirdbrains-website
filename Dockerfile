@@ -6,10 +6,11 @@ RUN flutter pub get
 COPY . .
 RUN flutter build web --release --base-href /
 
-# Stage 2: Serve with nginx (Cloud Run hardcodes PORT=8080)
+# Stage 2: Serve with nginx (Cloud Run PORT=8080)
 FROM nginx:alpine
+# Remove default nginx config that conflicts with our custom config
+RUN rm -f /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=builder /app/build/web /usr/share/nginx/html
-
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]
