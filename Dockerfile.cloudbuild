@@ -1,0 +1,15 @@
+# Used by Cloud Build — Flutter build runs as a separate Cloud Build step
+# This Dockerfile just packages the pre-built web output into nginx.
+FROM nginx:alpine
+
+RUN rm -f /etc/nginx/conf.d/default.conf
+RUN mkdir -p /tmp/client_body /tmp/proxy /tmp/fastcgi /tmp/uwsgi /tmp/scgi \
+    && chmod 777 /tmp/client_body /tmp/proxy /tmp/fastcgi /tmp/uwsgi /tmp/scgi
+
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY build/web /usr/share/nginx/html
+
+RUN test -f /usr/share/nginx/html/index.html && echo "Content verified" || (echo "ERROR: build/web/index.html not found" && exit 1)
+
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

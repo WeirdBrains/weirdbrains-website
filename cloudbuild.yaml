@@ -1,20 +1,39 @@
 steps:
+  # Step 1: Flutter pub get
+  - name: 'ghcr.io/cirruslabs/flutter:stable'
+    entrypoint: flutter
+    args: ['pub', 'get']
+
+  # Step 2: Flutter build web (output lands in ./build/web)
   - name: 'ghcr.io/cirruslabs/flutter:stable'
     entrypoint: flutter
     args: ['build', 'web', '--release', '--base-href', '/']
 
+  # Step 3: Verify build output exists
+  - name: 'alpine'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        echo "=== Build output ===" && ls -la build/web/ && test -f build/web/index.html && echo "✅ index.html found"
+
+  # Step 4: Docker build (uses pre-built web output, no flutter inside Docker)
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - build
+      - -f
+      - Dockerfile.cloudbuild
       - -t
       - us-central1-docker.pkg.dev/mandible-production/mandible-prod/weirdbrains-website:$COMMIT_SHA
       - -t
       - us-central1-docker.pkg.dev/mandible-production/mandible-prod/weirdbrains-website:latest
       - .
 
+  # Step 5: Push
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '--all-tags', 'us-central1-docker.pkg.dev/mandible-production/mandible-prod/weirdbrains-website']
 
+  # Step 6: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -25,7 +44,7 @@ steps:
       - --region=us-central1
       - --platform=managed
       - --allow-unauthenticated
-      - --memory=256Mi
+      - --memory=512Mi
       - --cpu=1
       - --min-instances=0
       - --max-instances=5
