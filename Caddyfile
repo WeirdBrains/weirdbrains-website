@@ -1,0 +1,15 @@
+:{$PORT:8080}
+
+root * /srv
+
+encode gzip
+
+# SPA routing: serve index.html for unknown paths
+try_files {path} /index.html
+
+file_server
+
+# Health check endpoint
+handle /health {
+    respond "ok" 200
+}
