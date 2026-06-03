@@ -18,8 +18,11 @@ class HeroSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final narrow = isNarrow(context);
     final h = MediaQuery.of(context).size.height;
+    // Explicit height (not minHeight): the hero lives inside a scroll view, so
+    // an unbounded height would collapse the bottom-aligned scroll indicator.
+    final heroH = _qaHeight ?? (h < 700 ? 700.0 : h);
     return Container(
-      constraints: BoxConstraints(minHeight: _qaHeight ?? (h < 640 ? 640 : h)),
+      height: heroH,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
