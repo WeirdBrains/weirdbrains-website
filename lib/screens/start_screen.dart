@@ -2,11 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
+import '../services/voice_service.dart';
+import '../services/voice_support.dart';
+import '../services/scoping_service.dart';
 import '../widgets/starfield.dart';
 import '../widgets/ui.dart';
 
-/// Multi-step consultation intake. Captures enough to qualify a lead, then
-/// hands off to the backend (which records it in the brain repo for triage).
+/// The portal. Problem-first, voice-enabled, and it shows AI reducing friction
+/// on the way to capturing a lead. State flows:
+///   problem -> thinking -> scoped -> contact -> done
+enum _Stage { problem, thinking, scoped, contact, done }
+
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
 
@@ -15,48 +21,106 @@ class StartScreen extends StatefulWidget {
 }
 
 class _StartScreenState extends State<StartScreen> {
-  static const _budgets = ['< \$10k', '\$10k–\$50k', '\$50k–\$150k', '\$150k+', 'Not sure yet'];
-  static const _timelines = ['ASAP', '1–3 months', '3–6 months', 'Exploring'];
-
-  final _formKey = GlobalKey<FormState>();
-  final _company = TextEditingController();
-  final _project = TextEditingController();
+  final _problem = TextEditingController();
   final _name = TextEditingController();
   final _email = TextEditingController();
+  final _company = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
 
-  String _budget = _budgets.first;
-  String _timeline = _timelines.first;
+  final _voice = VoiceService();
+  bool _voiceAvailable = false;
+  bool _voiceInited = false;
+  bool _listening = false;
+  String _preVoiceText = '';
 
-  int _step = 0; // 0 project, 1 scope, 2 contact
+  _Stage _stage = _Stage.problem;
+  ScopedRead? _read;
   bool _submitting = false;
-  bool _done = false;
   String? _error;
+
+  static const _examples = [
+    'Read dental x-rays and flag pathology',
+    'Score pipe condition from drain-camera video',
+    'Triage support tickets by urgency',
+    'Catch defects on our production line',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    // Gesture-free feature detection. Actual init happens on the mic click.
+    _voiceAvailable = speechRecognitionSupported();
+  }
 
   @override
   void dispose() {
-    _company.dispose();
-    _project.dispose();
+    _voice.stop();
+    _problem.dispose();
     _name.dispose();
     _email.dispose();
+    _company.dispose();
     super.dispose();
   }
 
-  bool get _step0Valid =>
-      _company.text.trim().isNotEmpty && _project.text.trim().length >= 12;
+  bool get _problemValid => _problem.text.trim().length >= 12;
 
-  void _next() {
-    setState(() => _error = null);
-    if (_step == 0 && !_step0Valid) {
-      setState(() => _error = 'Tell us your company and a sentence or two about the project.');
+  Future<void> _toggleMic() async {
+    if (_listening) {
+      await _voice.stop();
+      if (mounted) setState(() => _listening = false);
       return;
     }
-    setState(() => _step++);
+    // Initialize on first use (the click is the required user gesture on web).
+    if (!_voiceInited) {
+      _voiceInited = true;
+      final ok = await _voice.init();
+      if (!ok) {
+        if (mounted) {
+          setState(() {
+            _voiceAvailable = false;
+            _error = 'Voice is not available in this browser. Try Chrome, or just type.';
+          });
+        }
+        return;
+      }
+    }
+    _preVoiceText = _problem.text.trim();
+    setState(() {
+      _listening = true;
+      _error = null;
+    });
+    await _voice.start(
+      onText: (text) {
+        final combined = _preVoiceText.isEmpty ? text : '$_preVoiceText $text';
+        _problem.text = combined;
+        _problem.selection =
+            TextSelection.collapsed(offset: _problem.text.length);
+        setState(() {});
+      },
+      onDone: () {
+        if (mounted) setState(() => _listening = false);
+      },
+    );
   }
 
-  void _back() => setState(() {
-        _error = null;
-        _step--;
-      });
+  Future<void> _readProblem() async {
+    if (!_problemValid) {
+      setState(() => _error = 'Give us a sentence or two so we can read it.');
+      return;
+    }
+    await _voice.stop();
+    setState(() {
+      _listening = false;
+      _error = null;
+      _stage = _Stage.thinking;
+    });
+    final r = await const ScopingService().read(_problem.text.trim());
+    if (!mounted) return;
+    setState(() {
+      _read = r;
+      _stage = _Stage.scoped;
+    });
+  }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -64,21 +128,21 @@ class _StartScreenState extends State<StartScreen> {
       _submitting = true;
       _error = null;
     });
-
     final err = await const IntakeService().submit(IntakeRequest(
-      company: _company.text.trim(),
-      projectDescription: _project.text.trim(),
-      budgetRange: _budget,
-      timeline: _timeline,
+      company: _company.text.trim().isEmpty
+          ? '(not provided)'
+          : _company.text.trim(),
+      projectDescription: _problem.text.trim(),
+      budgetRange: 'Not specified',
+      timeline: 'Not specified',
       contactName: _name.text.trim(),
       contactEmail: _email.text.trim(),
     ));
-
     if (!mounted) return;
     setState(() {
       _submitting = false;
       if (err == null) {
-        _done = true;
+        _stage = _Stage.done;
       } else {
         _error = err;
       }
@@ -91,7 +155,6 @@ class _StartScreenState extends State<StartScreen> {
       backgroundColor: AppTheme.background,
       body: Stack(
         children: [
-          // subtle cosmic backdrop ties the form into the rest of the site
           Positioned.fill(
             child: IgnorePointer(
               child: Opacity(opacity: 0.4, child: const Starfield()),
@@ -101,8 +164,8 @@ class _StartScreenState extends State<StartScreen> {
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 56),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 560),
-                child: _done ? _buildDone(context) : _buildForm(context),
+                constraints: const BoxConstraints(maxWidth: 620),
+                child: _card(),
               ),
             ),
           ),
@@ -111,7 +174,7 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  Widget _buildForm(BuildContext context) {
+  Widget _card() {
     return Container(
       padding: const EdgeInsets.all(36),
       decoration: BoxDecoration(
@@ -125,202 +188,426 @@ class _StartScreenState extends State<StartScreen> {
               spreadRadius: -20),
         ],
       ),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _BackToHome(),
-            const SizedBox(height: 28),
-            Text('Start a project', style: AppTheme.heading(30)),
-            const SizedBox(height: 10),
-            Text('Tell us what you do and where AI could help. We read every one.',
-                style: AppTheme.body(15)),
-            const SizedBox(height: 30),
-            _StepBar(current: _step, total: 3),
-            const SizedBox(height: 30),
-            ..._buildStep(context),
-            if (_error != null) ...[
-              const SizedBox(height: 16),
-              Text(_error!,
-                  style: AppTheme.body(14, color: const Color(0xFFFF8585), height: 1.4)),
-            ],
-            const SizedBox(height: 30),
-            _buildNav(context),
-          ],
-        ),
-      ),
+      child: switch (_stage) {
+        _Stage.problem => _problemStage(),
+        _Stage.thinking => _thinkingStage(),
+        _Stage.scoped => _scopedStage(),
+        _Stage.contact => _contactStage(),
+        _Stage.done => _doneStage(),
+      },
     );
   }
 
-  List<Widget> _buildStep(BuildContext context) {
-    switch (_step) {
-      case 0:
-        return [
-          _field(_company, 'Company', hint: 'Acme Grading Co.'),
-          const SizedBox(height: 20),
-          _field(
-            _project,
-            'What are you building?',
-            hint: 'We run sliplining inspections and want AI to classify pipe condition from video.',
-            maxLines: 4,
-          ),
-        ];
-      case 1:
-        return [
-          const _Label('Budget range'),
-          const SizedBox(height: 12),
-          _chips(_budgets, _budget, (v) => setState(() => _budget = v)),
-          const SizedBox(height: 28),
-          const _Label('Timeline'),
-          const SizedBox(height: 12),
-          _chips(_timelines, _timeline, (v) => setState(() => _timeline = v)),
-        ];
-      default:
-        return [
-          _field(_name, 'Your name', hint: 'Jane Doe', validator: _required),
-          const SizedBox(height: 20),
-          _field(_email, 'Email', hint: 'jane@acme.com', validator: _email_),
-          const SizedBox(height: 24),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.purple.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppTheme.purple.withValues(alpha: 0.2)),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.lock_outline_rounded,
-                    size: 18, color: AppTheme.purpleBright),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'A human reviews every request before we reach out. No spam, no autoresponders.',
-                    style: AppTheme.body(13, height: 1.5),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ];
-    }
-  }
-
-  Widget _buildNav(BuildContext context) {
-    final isLast = _step == 2;
-    return Row(
+  // ---- Stage 1: the problem (voice-first) ----
+  Widget _problemStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_step > 0)
-          Hoverable(
-            onTap: _submitting ? null : _back,
-            builder: (h) => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-              child: Text('Back',
-                  style: AppTheme.body(15,
-                      color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                      height: 1.0)),
+        _backToHome(),
+        const SizedBox(height: 26),
+        Text('What do you want AI to solve?', style: AppTheme.heading(28)),
+        const SizedBox(height: 10),
+        Text(
+          _voiceAvailable
+              ? 'Describe the problem in your own words. Type it, or just talk.'
+              : 'Describe the problem in your own words.',
+          style: AppTheme.body(15),
+        ),
+        const SizedBox(height: 24),
+        _problemInput(),
+        if (_error != null) ...[
+          const SizedBox(height: 14),
+          Text(_error!,
+              style: AppTheme.body(14, color: const Color(0xFFFF8585))),
+        ],
+        const SizedBox(height: 20),
+        Text('TRY ONE', style: AppTheme.eyebrow().copyWith(fontSize: 10, color: AppTheme.textMuted)),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final ex in _examples)
+              Hoverable(
+                onTap: () {
+                  _problem.text = ex;
+                  setState(() => _error = null);
+                },
+                builder: (h) => Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: h
+                        ? AppTheme.purple.withValues(alpha: 0.12)
+                        : Colors.white.withValues(alpha: 0.03),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                        color: h
+                            ? AppTheme.purple.withValues(alpha: 0.4)
+                            : AppTheme.border),
+                  ),
+                  child: Text(ex,
+                      style: AppTheme.body(13,
+                          color: AppTheme.textSecondary, height: 1.0)),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 28),
+        Row(
+          children: [
+            const Spacer(),
+            PrimaryButton(
+              label: 'Continue',
+              icon: Icons.arrow_forward_rounded,
+              onTap: _readProblem,
             ),
-          ),
-        const Spacer(),
-        if (_submitting)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              gradient: const LinearGradient(colors: AppTheme.ctaGradient),
-            ),
-            child: const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            ),
-          )
-        else
-          PrimaryButton(
-            label: isLast ? 'Send request' : 'Continue',
-            icon: isLast ? Icons.send_rounded : Icons.arrow_forward_rounded,
-            onTap: isLast ? _submit : _next,
-          ),
+          ],
+        ),
       ],
     );
   }
 
-  Widget _buildDone(BuildContext context) {
+  Widget _problemInput() {
     return Container(
-      padding: const EdgeInsets.all(40),
       decoration: BoxDecoration(
-        color: AppTheme.surface.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppTheme.border),
+        color: AppTheme.background.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _listening ? AppTheme.purple : AppTheme.border,
+          width: _listening ? 1.5 : 1,
+        ),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: AppTheme.ctaGradient),
-              borderRadius: BorderRadius.circular(18),
-              boxShadow: [
-                BoxShadow(
-                    color: AppTheme.purple.withValues(alpha: 0.4),
-                    blurRadius: 24,
-                    spreadRadius: -6)
+          TextField(
+            controller: _problem,
+            maxLines: 4,
+            minLines: 4,
+            style: AppTheme.body(16, color: AppTheme.textPrimary, height: 1.5),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            decoration: InputDecoration(
+              hintText:
+                  'e.g. We run sliplining inspections and want AI to score pipe condition from our drain-camera video.',
+              hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Row(
+              children: [
+                if (_voiceAvailable) _micButton(),
+                const Spacer(),
+                if (_listening)
+                  Text('Listening...',
+                      style: AppTheme.body(13, color: AppTheme.purpleBright)),
               ],
             ),
-            child: const Icon(Icons.check_rounded, color: Colors.white, size: 32),
-          ),
-          const SizedBox(height: 28),
-          Text('Got it.', style: AppTheme.heading(30)),
-          const SizedBox(height: 12),
-          Text(
-            'Your request is in. A human at Weird Brains will review it and reach out, '
-            'usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
-            style: AppTheme.body(15.5),
-          ),
-          const SizedBox(height: 30),
-          Hoverable(
-            onTap: () => context.go('/'),
-            builder: (h) => Text('← Back to home',
-                style: AppTheme.body(15,
-                    color: h ? AppTheme.purpleBright : AppTheme.purple,
-                    height: 1.0)),
           ),
         ],
       ),
     );
   }
 
-  // ---- small helpers ----
+  Widget _micButton() {
+    return Hoverable(
+      onTap: _toggleMic,
+      builder: (h) => AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: _listening
+              ? AppTheme.purple.withValues(alpha: 0.2)
+              : (h ? Colors.white.withValues(alpha: 0.06) : Colors.transparent),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+              color: _listening ? AppTheme.purple : AppTheme.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _listening
+                ? const PulseDot(color: AppTheme.purpleBright, size: 8)
+                : const Icon(Icons.mic_none_rounded,
+                    size: 18, color: AppTheme.textSecondary),
+            const SizedBox(width: 7),
+            Text(_listening ? 'Stop' : 'Speak',
+                style: AppTheme.body(13.5,
+                    color: _listening
+                        ? AppTheme.purpleBright
+                        : AppTheme.textSecondary,
+                    height: 1.0)),
+          ],
+        ),
+      ),
+    );
+  }
 
-  Widget _field(
-    TextEditingController c,
-    String label, {
-    String? hint,
-    int maxLines = 1,
-    String? Function(String?)? validator,
-  }) {
+  // ---- Stage 2: thinking ----
+  Widget _thinkingStage() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: AppTheme.purpleBright),
+              ),
+              const SizedBox(width: 14),
+              Text('Reading your problem...',
+                  style: AppTheme.heading(18, color: AppTheme.textSecondary)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---- Stage 3: the agent's read ----
+  Widget _scopedStage() {
+    final r = _read!;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _Label(label),
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
+            const SizedBox(width: 10),
+            Text('First-pass read',
+                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _domainChip(r.domain),
+        const SizedBox(height: 22),
+        Text('How we would approach it', style: AppTheme.heading(22)),
+        const SizedBox(height: 18),
+        for (int i = 0; i < r.approach.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 7),
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                      gradient: LinearGradient(colors: AppTheme.ctaGradient),
+                      shape: BoxShape.circle),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                    child: Text(r.approach[i],
+                        style: AppTheme.body(15.5, height: 1.6))),
+              ],
+            ),
+          ),
+        const SizedBox(height: 18),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppTheme.purple.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppTheme.purple.withValues(alpha: 0.2)),
+          ),
+          child: Text(
+            'This is an instant first pass. A human refines it with you before anything gets built.',
+            style: AppTheme.body(13.5, height: 1.5),
+          ),
+        ),
+        const SizedBox(height: 26),
+        Row(
+          children: [
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.problem),
+              builder: (h) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                child: Text('Edit',
+                    style: AppTheme.body(15,
+                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                        height: 1.0)),
+              ),
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Send to a human',
+              icon: Icons.arrow_forward_rounded,
+              onTap: () => setState(() => _stage = _Stage.contact),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _domainChip(String domain) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.sky.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppTheme.sky.withValues(alpha: 0.3)),
+      ),
+      child: Text(domain,
+          style: AppTheme.body(13.5, color: AppTheme.sky, height: 1.0)
+              .copyWith(fontWeight: FontWeight.w600)),
+    );
+  }
+
+  // ---- Stage 4: contact ----
+  Widget _contactStage() {
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Where do we send it?', style: AppTheme.heading(26)),
+          const SizedBox(height: 10),
+          Text('A human reviews every request. No spam, no autoresponders.',
+              style: AppTheme.body(15)),
+          const SizedBox(height: 26),
+          _field(_name, 'Your name', hint: 'Jane Rivera', validator: _required),
+          const SizedBox(height: 18),
+          _field(_email, 'Email', hint: 'jane@acme.com', validator: _email_),
+          const SizedBox(height: 18),
+          _field(_company, 'Company (optional)', hint: 'Acme Grading Co.'),
+          if (_error != null) ...[
+            const SizedBox(height: 14),
+            Text(_error!,
+                style: AppTheme.body(14, color: const Color(0xFFFF8585))),
+          ],
+          const SizedBox(height: 26),
+          Row(
+            children: [
+              Hoverable(
+                onTap: _submitting
+                    ? null
+                    : () => setState(() => _stage = _Stage.scoped),
+                builder: (h) => Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                  child: Text('Back',
+                      style: AppTheme.body(15,
+                          color:
+                              h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                          height: 1.0)),
+                ),
+              ),
+              const Spacer(),
+              if (_submitting)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(999),
+                    gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+                  ),
+                  child: const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  ),
+                )
+              else
+                PrimaryButton(
+                  label: 'Send request',
+                  icon: Icons.send_rounded,
+                  onTap: _submit,
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---- Stage 5: done ----
+  Widget _doneStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                  color: AppTheme.purple.withValues(alpha: 0.4),
+                  blurRadius: 24,
+                  spreadRadius: -6)
+            ],
+          ),
+          child: const Icon(Icons.check_rounded, color: Colors.white, size: 32),
+        ),
+        const SizedBox(height: 28),
+        Text('Got it.', style: AppTheme.heading(30)),
+        const SizedBox(height: 12),
+        Text(
+          'Your problem is in front of a human now. We will review it and reach '
+          'out, usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
+          style: AppTheme.body(15.5),
+        ),
+        const SizedBox(height: 30),
+        Hoverable(
+          onTap: () => context.go('/'),
+          builder: (h) => Text('← Back to home',
+              style: AppTheme.body(15,
+                  color: h ? AppTheme.purpleBright : AppTheme.purple,
+                  height: 1.0)),
+        ),
+      ],
+    );
+  }
+
+  // ---- helpers ----
+  Widget _backToHome() {
+    return Hoverable(
+      onTap: () => context.go('/'),
+      builder: (h) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('🧠', style: TextStyle(fontSize: 16)),
+          const SizedBox(width: 8),
+          Text('Weird Brains',
+              style: AppTheme.body(14,
+                  color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                  height: 1.0)),
+        ],
+      ),
+    );
+  }
+
+  Widget _field(TextEditingController c, String label,
+      {String? hint, String? Function(String?)? validator}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: AppTheme.heading(15.5)),
         const SizedBox(height: 10),
         TextFormField(
           controller: c,
-          maxLines: maxLines,
           validator: validator,
           style: AppTheme.body(15.5, color: AppTheme.textPrimary, height: 1.4),
-          onChanged: (_) {
-            if (_error != null) setState(() => _error = null);
-          },
           decoration: InputDecoration(
             hintText: hint,
             hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
             filled: true,
             fillColor: AppTheme.background.withValues(alpha: 0.6),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(color: AppTheme.border),
@@ -343,38 +630,6 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  Widget _chips(List<String> options, String selected, ValueChanged<String> onPick) {
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: options.map((o) {
-        final isSel = o == selected;
-        return Hoverable(
-          onTap: () => onPick(o),
-          builder: (h) => AnimatedContainer(
-            duration: const Duration(milliseconds: 140),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            decoration: BoxDecoration(
-              color: isSel
-                  ? AppTheme.purple.withValues(alpha: 0.16)
-                  : (h ? Colors.white.withValues(alpha: 0.05) : AppTheme.background.withValues(alpha: 0.5)),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: isSel ? AppTheme.purple : AppTheme.border),
-            ),
-            child: Text(
-              o,
-              style: AppTheme.body(14.5,
-                  color: isSel ? AppTheme.purpleBright : AppTheme.textSecondary,
-                  height: 1.0).copyWith(
-                  fontWeight: isSel ? FontWeight.w600 : FontWeight.w400),
-            ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
   static String? _required(String? v) =>
       (v == null || v.trim().isEmpty) ? 'Required' : null;
 
@@ -382,64 +637,5 @@ class _StartScreenState extends State<StartScreen> {
     if (v == null || v.trim().isEmpty) return 'Required';
     final ok = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v.trim());
     return ok ? null : 'Enter a valid email';
-  }
-}
-
-class _Label extends StatelessWidget {
-  final String text;
-  const _Label(this.text);
-
-  @override
-  Widget build(BuildContext context) =>
-      Text(text, style: AppTheme.heading(15.5));
-}
-
-class _StepBar extends StatelessWidget {
-  final int current;
-  final int total;
-  const _StepBar({required this.current, required this.total});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: List.generate(total, (i) {
-        final active = i <= current;
-        return Expanded(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            margin: EdgeInsets.only(right: i == total - 1 ? 0 : 8),
-            height: 4,
-            decoration: BoxDecoration(
-              gradient: active
-                  ? const LinearGradient(
-                      colors: [AppTheme.purpleBright, AppTheme.sky])
-                  : null,
-              color: active ? null : Colors.white.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-        );
-      }),
-    );
-  }
-}
-
-class _BackToHome extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Hoverable(
-      onTap: () => context.go('/'),
-      builder: (h) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text('🧠', style: TextStyle(fontSize: 16)),
-          const SizedBox(width: 8),
-          Text('Weird Brains',
-              style: AppTheme.body(14,
-                  color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                  height: 1.0)),
-        ],
-      ),
-    );
   }
 }
