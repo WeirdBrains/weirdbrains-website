@@ -87,27 +87,35 @@ class _StarfieldState extends State<Starfield>
 
   @override
   Widget build(BuildContext context) {
+    // LayoutBuilder gives the size so nebulas can be DIRECT Positioned children
+    // of the Stack. (Wrapping a Positioned in another widget breaks the
+    // Stack/StackParentData contract and throws every frame.)
     return RepaintBoundary(
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (context, _) {
-          final t = _c.value;
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              // Subtle, low-positioned color glows only. Kept out of the
-              // upper-center so the headline sits on clean deep navy.
-              _nebula(t, AppTheme.purple, cx: 0.16, cy: 1.02, rad: 620, baseA: 0.07, drift: 1, phase: 0.0),
-              _nebula(t, AppTheme.sky, cx: 0.9, cy: 1.05, rad: 540, baseA: 0.05, drift: 1, phase: 0.45),
-              CustomPaint(painter: _SkyPainter(_stars, _shoots, t)),
-            ],
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final w = c.maxWidth, h = c.maxHeight;
+          return AnimatedBuilder(
+            animation: _c,
+            builder: (context, _) {
+              final t = _c.value;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  _nebula(w, h, t, AppTheme.purple,
+                      cx: 0.18, cy: 0.92, rad: 640, baseA: 0.09, drift: 1, phase: 0.0),
+                  _nebula(w, h, t, AppTheme.sky,
+                      cx: 0.86, cy: 0.96, rad: 560, baseA: 0.06, drift: 1, phase: 0.45),
+                  CustomPaint(painter: _SkyPainter(_stars, _shoots, t)),
+                ],
+              );
+            },
           );
         },
       ),
     );
   }
 
-  Widget _nebula(double t, Color color,
+  Positioned _nebula(double w, double h, double t, Color color,
       {required double cx,
       required double cy,
       required double rad,
@@ -118,25 +126,23 @@ class _StarfieldState extends State<Starfield>
     final dx = math.cos(wobble) * 26;
     final dy = math.sin(wobble) * 20;
     final pulse = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(wobble));
-    return LayoutBuilder(builder: (context, c) {
-      return Positioned(
-        left: cx * c.maxWidth - rad / 2 + dx,
-        top: cy * c.maxHeight - rad / 2 + dy,
-        width: rad,
-        height: rad,
-        child: Container(
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: RadialGradient(
-              colors: [
-                color.withValues(alpha: baseA * pulse),
-                color.withValues(alpha: 0),
-              ],
-            ),
+    return Positioned(
+      left: cx * w - rad / 2 + dx,
+      top: cy * h - rad / 2 + dy,
+      width: rad,
+      height: rad,
+      child: Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [
+              color.withValues(alpha: baseA * pulse),
+              color.withValues(alpha: 0),
+            ],
           ),
         ),
-      );
-    });
+      ),
+    );
   }
 }
 
@@ -183,12 +189,15 @@ class _SkyPainter extends CustomPainter {
       final y = ((s.y + t * s.drift) % 1.0) * size.height;
       final x = s.x * size.width;
       final c = s.color;
+      // Soft halo via a radial gradient (NOT MaskFilter.blur — that renders as
+      // opaque grey boxes when CanvasKit falls back to software rendering).
       if (s.r > 1.2) {
-        p
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.2)
-          ..color = c.withValues(alpha: a * 0.55);
-        canvas.drawCircle(Offset(x, y), s.r * 2.4, p);
-        p.maskFilter = null;
+        final glowR = s.r * 3.2;
+        p.shader = RadialGradient(
+          colors: [c.withValues(alpha: a * 0.45), c.withValues(alpha: 0)],
+        ).createShader(Rect.fromCircle(center: Offset(x, y), radius: glowR));
+        canvas.drawCircle(Offset(x, y), glowR, p);
+        p.shader = null;
       }
       p.color = c.withValues(alpha: a);
       canvas.drawCircle(Offset(x, y), s.r, p);
