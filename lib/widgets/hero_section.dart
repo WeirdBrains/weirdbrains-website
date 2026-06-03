@@ -27,8 +27,9 @@ class HeroSection extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFF00224A), AppTheme.background, AppTheme.deepSpace],
-          stops: [0.0, 0.5, 1.0],
+          // Clean brand navy across the top, deepening only near the bottom.
+          colors: [AppTheme.background, AppTheme.background, AppTheme.deepSpace],
+          stops: [0.0, 0.62, 1.0],
         ),
       ),
       child: Stack(

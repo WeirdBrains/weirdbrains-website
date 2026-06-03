@@ -95,9 +95,10 @@ class _StarfieldState extends State<Starfield>
           return Stack(
             fit: StackFit.expand,
             children: [
-              _nebula(t, AppTheme.purple, cx: 0.22, cy: 0.28, rad: 760, baseA: 0.16, drift: 1, phase: 0.0),
-              _nebula(t, AppTheme.sky, cx: 0.82, cy: 0.18, rad: 620, baseA: 0.10, drift: 1, phase: 0.4),
-              _nebula(t, AppTheme.gold, cx: 0.62, cy: 0.7, rad: 520, baseA: 0.07, drift: 2, phase: 0.7),
+              // Subtle, low-positioned color glows only. Kept out of the
+              // upper-center so the headline sits on clean deep navy.
+              _nebula(t, AppTheme.purple, cx: 0.16, cy: 1.02, rad: 620, baseA: 0.07, drift: 1, phase: 0.0),
+              _nebula(t, AppTheme.sky, cx: 0.9, cy: 1.05, rad: 540, baseA: 0.05, drift: 1, phase: 0.45),
               CustomPaint(painter: _SkyPainter(_stars, _shoots, t)),
             ],
           );
