@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
+import '../widgets/starfield.dart';
+import '../widgets/ui.dart';
 
 /// Multi-step consultation intake. Captures enough to qualify a lead, then
-/// hands off to the backend (which scores it and routes to Telegram for
-/// human approval before any follow-up is sent).
+/// hands off to the backend (which records it in the brain repo for triage).
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
 
@@ -88,49 +89,66 @@ class _StartScreenState extends State<StartScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: _done ? _buildDone(context) : _buildForm(context),
+      body: Stack(
+        children: [
+          // subtle cosmic backdrop ties the form into the rest of the site
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Opacity(opacity: 0.4, child: const Starfield()),
+            ),
           ),
-        ),
+          Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 56),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 560),
+                child: _done ? _buildDone(context) : _buildForm(context),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildForm(BuildContext context) {
-    return Form(
-      key: _formKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _BackToHome(),
-          const SizedBox(height: 32),
-          Text(
-            'Start a project',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: AppTheme.textPrimary,
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Tell us what you do and where AI could help. We read every one.',
-            style: TextStyle(color: AppTheme.textSecondary, height: 1.5),
-          ),
-          const SizedBox(height: 32),
-          _StepDots(current: _step, total: 3),
-          const SizedBox(height: 32),
-          ..._buildStep(context),
-          if (_error != null) ...[
-            const SizedBox(height: 16),
-            Text(_error!, style: const TextStyle(color: Color(0xFFFF7A7A), height: 1.4)),
-          ],
-          const SizedBox(height: 32),
-          _buildNav(context),
+    return Container(
+      padding: const EdgeInsets.all(36),
+      decoration: BoxDecoration(
+        color: AppTheme.surface.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppTheme.border),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 60,
+              spreadRadius: -20),
         ],
+      ),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _BackToHome(),
+            const SizedBox(height: 28),
+            Text('Start a project', style: AppTheme.heading(30)),
+            const SizedBox(height: 10),
+            Text('Tell us what you do and where AI could help. We read every one.',
+                style: AppTheme.body(15)),
+            const SizedBox(height: 30),
+            _StepBar(current: _step, total: 3),
+            const SizedBox(height: 30),
+            ..._buildStep(context),
+            if (_error != null) ...[
+              const SizedBox(height: 16),
+              Text(_error!,
+                  style: AppTheme.body(14, color: const Color(0xFFFF8585), height: 1.4)),
+            ],
+            const SizedBox(height: 30),
+            _buildNav(context),
+          ],
+        ),
       ),
     );
   }
@@ -167,13 +185,22 @@ class _StartScreenState extends State<StartScreen> {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppTheme.surface,
+              color: AppTheme.purple.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white10),
+              border: Border.all(color: AppTheme.purple.withValues(alpha: 0.2)),
             ),
-            child: const Text(
-              'A human reviews every request before we reach out. No spam, no autoresponders.',
-              style: TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.5),
+            child: Row(
+              children: [
+                const Icon(Icons.lock_outline_rounded,
+                    size: 18, color: AppTheme.purpleBright),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'A human reviews every request before we reach out. No spam, no autoresponders.',
+                    style: AppTheme.body(13, height: 1.5),
+                  ),
+                ),
+              ],
             ),
           ),
         ];
@@ -185,64 +212,84 @@ class _StartScreenState extends State<StartScreen> {
     return Row(
       children: [
         if (_step > 0)
-          TextButton(
-            onPressed: _submitting ? null : _back,
-            child: const Text('Back', style: TextStyle(color: AppTheme.textSecondary)),
+          Hoverable(
+            onTap: _submitting ? null : _back,
+            builder: (h) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+              child: Text('Back',
+                  style: AppTheme.body(15,
+                      color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                      height: 1.0)),
+            ),
           ),
         const Spacer(),
-        FilledButton(
-          onPressed: _submitting ? null : (isLast ? _submit : _next),
-          style: FilledButton.styleFrom(
-            backgroundColor: AppTheme.accent,
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 18),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        if (_submitting)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+            ),
+            child: const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            ),
+          )
+        else
+          PrimaryButton(
+            label: isLast ? 'Send request' : 'Continue',
+            icon: isLast ? Icons.send_rounded : Icons.arrow_forward_rounded,
+            onTap: isLast ? _submit : _next,
           ),
-          child: _submitting
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
-              : Text(isLast ? 'Send request' : 'Continue',
-                  style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
-        ),
       ],
     );
   }
 
   Widget _buildDone(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 56,
-          height: 56,
-          decoration: BoxDecoration(
-            color: AppTheme.accent.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(16),
+    return Container(
+      padding: const EdgeInsets.all(40),
+      decoration: BoxDecoration(
+        color: AppTheme.surface.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: [
+                BoxShadow(
+                    color: AppTheme.purple.withValues(alpha: 0.4),
+                    blurRadius: 24,
+                    spreadRadius: -6)
+              ],
+            ),
+            child: const Icon(Icons.check_rounded, color: Colors.white, size: 32),
           ),
-          child: const Icon(Icons.check_rounded, color: AppTheme.accent, size: 30),
-        ),
-        const SizedBox(height: 28),
-        Text(
-          'Got it.',
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                color: AppTheme.textPrimary,
-                fontWeight: FontWeight.bold,
-              ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'Your request is in. A human at Weird Brains will review it and reach out, '
-          'usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
-          style: const TextStyle(color: AppTheme.textSecondary, height: 1.6),
-        ),
-        const SizedBox(height: 32),
-        TextButton(
-          onPressed: () => context.go('/'),
-          child: const Text('← Back to home', style: TextStyle(color: AppTheme.accent)),
-        ),
-      ],
+          const SizedBox(height: 28),
+          Text('Got it.', style: AppTheme.heading(30)),
+          const SizedBox(height: 12),
+          Text(
+            'Your request is in. A human at Weird Brains will review it and reach out, '
+            'usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
+            style: AppTheme.body(15.5),
+          ),
+          const SizedBox(height: 30),
+          Hoverable(
+            onTap: () => context.go('/'),
+            builder: (h) => Text('← Back to home',
+                style: AppTheme.body(15,
+                    color: h ? AppTheme.purpleBright : AppTheme.purple,
+                    height: 1.0)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -264,31 +311,31 @@ class _StartScreenState extends State<StartScreen> {
           controller: c,
           maxLines: maxLines,
           validator: validator,
-          style: const TextStyle(color: AppTheme.textPrimary),
+          style: AppTheme.body(15.5, color: AppTheme.textPrimary, height: 1.4),
           onChanged: (_) {
             if (_error != null) setState(() => _error = null);
           },
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: const TextStyle(color: Color(0xFF5A5A5A)),
+            hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
             filled: true,
-            fillColor: AppTheme.surface,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            fillColor: AppTheme.background.withValues(alpha: 0.6),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Colors.white10),
+              borderSide: BorderSide(color: AppTheme.border),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AppTheme.accent),
+              borderSide: const BorderSide(color: AppTheme.purple, width: 1.5),
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFFF7A7A)),
+              borderSide: const BorderSide(color: Color(0xFFFF8585)),
             ),
             focusedErrorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFFF7A7A)),
+              borderSide: const BorderSide(color: Color(0xFFFF8585)),
             ),
           ),
         ),
@@ -302,22 +349,25 @@ class _StartScreenState extends State<StartScreen> {
       runSpacing: 10,
       children: options.map((o) {
         final isSel = o == selected;
-        return GestureDetector(
+        return Hoverable(
           onTap: () => onPick(o),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
+          builder: (h) => AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
             decoration: BoxDecoration(
-              color: isSel ? AppTheme.accent.withOpacity(0.15) : AppTheme.surface,
+              color: isSel
+                  ? AppTheme.purple.withValues(alpha: 0.16)
+                  : (h ? Colors.white.withValues(alpha: 0.05) : AppTheme.background.withValues(alpha: 0.5)),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: isSel ? AppTheme.accent : Colors.white10),
+              border: Border.all(
+                  color: isSel ? AppTheme.purple : AppTheme.border),
             ),
             child: Text(
               o,
-              style: TextStyle(
-                color: isSel ? AppTheme.accent : AppTheme.textSecondary,
-                fontWeight: isSel ? FontWeight.w600 : FontWeight.normal,
-              ),
+              style: AppTheme.body(14.5,
+                  color: isSel ? AppTheme.purpleBright : AppTheme.textSecondary,
+                  height: 1.0).copyWith(
+                  fontWeight: isSel ? FontWeight.w600 : FontWeight.w400),
             ),
           ),
         );
@@ -340,20 +390,14 @@ class _Label extends StatelessWidget {
   const _Label(this.text);
 
   @override
-  Widget build(BuildContext context) => Text(
-        text,
-        style: const TextStyle(
-          color: AppTheme.textPrimary,
-          fontWeight: FontWeight.w600,
-          fontSize: 15,
-        ),
-      );
+  Widget build(BuildContext context) =>
+      Text(text, style: AppTheme.heading(15.5));
 }
 
-class _StepDots extends StatelessWidget {
+class _StepBar extends StatelessWidget {
   final int current;
   final int total;
-  const _StepDots({required this.current, required this.total});
+  const _StepBar({required this.current, required this.total});
 
   @override
   Widget build(BuildContext context) {
@@ -361,11 +405,16 @@ class _StepDots extends StatelessWidget {
       children: List.generate(total, (i) {
         final active = i <= current;
         return Expanded(
-          child: Container(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
             margin: EdgeInsets.only(right: i == total - 1 ? 0 : 8),
             height: 4,
             decoration: BoxDecoration(
-              color: active ? AppTheme.accent : Colors.white12,
+              gradient: active
+                  ? const LinearGradient(
+                      colors: [AppTheme.purpleBright, AppTheme.sky])
+                  : null,
+              color: active ? null : Colors.white.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -378,10 +427,19 @@ class _StepDots extends StatelessWidget {
 class _BackToHome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return TextButton(
-      onPressed: () => context.go('/'),
-      style: TextButton.styleFrom(padding: EdgeInsets.zero),
-      child: const Text('← Weird Brains', style: TextStyle(color: AppTheme.textSecondary)),
+    return Hoverable(
+      onTap: () => context.go('/'),
+      builder: (h) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('🧠', style: TextStyle(fontSize: 16)),
+          const SizedBox(width: 8),
+          Text('Weird Brains',
+              style: AppTheme.body(14,
+                  color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                  height: 1.0)),
+        ],
+      ),
     );
   }
 }

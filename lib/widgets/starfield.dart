@@ -2,14 +2,15 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// Animated cosmic starfield, matching the live weirdbrains.com canvas.
-/// Twinkling + slowly drifting stars, plus a few floating doodles.
+/// Premium cosmic backdrop: a slowly drifting nebula behind three parallax
+/// layers of twinkling stars, with the occasional shooting star.
 ///
-/// The loop is seamless: per-star twinkle and drift use INTEGER cycle counts
-/// over the controller period, so value 1.0 lands exactly where 0.0 began.
+/// Everything loops seamlessly over [period] because each periodic effect uses
+/// an INTEGER number of cycles, so value 1.0 lands exactly on value 0.0.
+/// Cheap to run: nebula is GPU-composited gradients, stars are one CustomPaint,
+/// the whole thing sits under a RepaintBoundary.
 class Starfield extends StatefulWidget {
-  final int starCount;
-  const Starfield({super.key, this.starCount = 150});
+  const Starfield({super.key});
 
   @override
   State<Starfield> createState() => _StarfieldState();
@@ -17,151 +18,218 @@ class Starfield extends StatefulWidget {
 
 class _StarfieldState extends State<Starfield>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
+  static const _period = Duration(seconds: 120);
+
+  late final AnimationController _c;
   late final List<_Star> _stars;
-  late final List<_Doodle> _doodles;
+  late final List<_Shoot> _shoots;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 60),
-    )..repeat();
+    _c = AnimationController(vsync: this, duration: _period)..repeat();
+    final rng = math.Random(7);
 
-    final rng = math.Random(42); // fixed seed → stable layout across rebuilds
-    _stars = List.generate(widget.starCount, (_) {
+    // Three depth layers: far (dim/tiny/slow) -> near (bright/bigger/faster).
+    _stars = [
+      ..._layer(rng, count: 90, minR: 0.4, maxR: 0.9, alphaLo: 0.15, alphaHi: 0.5, drift: 1),
+      ..._layer(rng, count: 55, minR: 0.7, maxR: 1.4, alphaLo: 0.3, alphaHi: 0.8, drift: 2),
+      ..._layer(rng, count: 22, minR: 1.2, maxR: 2.1, alphaLo: 0.5, alphaHi: 1.0, drift: 3),
+    ];
+
+    // A few shooting stars, spaced through the loop, each finishing before wrap.
+    _shoots = List.generate(4, (i) {
+      return _Shoot(
+        startT: 0.12 + i * 0.22 + rng.nextDouble() * 0.04,
+        durT: 0.018 + rng.nextDouble() * 0.01,
+        x0: 0.1 + rng.nextDouble() * 0.7,
+        y0: 0.05 + rng.nextDouble() * 0.35,
+        angle: math.pi * (0.18 + rng.nextDouble() * 0.12), // gentle downward
+        len: 120 + rng.nextDouble() * 90,
+      );
+    });
+  }
+
+  List<_Star> _layer(math.Random rng,
+      {required int count,
+      required double minR,
+      required double maxR,
+      required double alphaLo,
+      required double alphaHi,
+      required int drift}) {
+    return List.generate(count, (_) {
       final roll = rng.nextDouble();
-      final color = roll < 0.12
+      final color = roll < 0.10
           ? AppTheme.gold
-          : roll < 0.20
-              ? AppTheme.purple
-              : Colors.white;
+          : roll < 0.18
+              ? AppTheme.purpleBright
+              : roll < 0.24
+                  ? AppTheme.sky
+                  : Colors.white;
       return _Star(
         x: rng.nextDouble(),
         y: rng.nextDouble(),
-        radius: 0.4 + rng.nextDouble() * 1.5,
-        baseOpacity: 0.2 + rng.nextDouble() * 0.7,
-        twinkleCycles: 5 + rng.nextInt(14), // integer → seamless
-        driftCycles: rng.nextInt(2), // 0 or 1 → subtle, seamless
+        r: minR + rng.nextDouble() * (maxR - minR),
+        baseAlpha: alphaLo + rng.nextDouble() * (alphaHi - alphaLo),
+        twinkle: 3 + rng.nextInt(10), // integer cycles -> seamless
+        drift: drift,
         phase: rng.nextDouble(),
         color: color,
-      );
-    });
-
-    const glyphs = ['🧠', '✨', '🚀', '🪐', '💫'];
-    _doodles = List.generate(5, (i) {
-      return _Doodle(
-        glyph: glyphs[i % glyphs.length],
-        x: 0.08 + rng.nextDouble() * 0.84,
-        y: 0.12 + rng.nextDouble() * 0.7,
-        size: 16 + rng.nextDouble() * 14,
-        bobCycles: 1 + rng.nextInt(2),
-        phase: rng.nextDouble(),
-        opacity: 0.12 + rng.nextDouble() * 0.18,
       );
     });
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _c.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        final t = _controller.value;
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            CustomPaint(painter: _StarPainter(_stars, t)),
-            for (final d in _doodles) _positionDoodle(context, d, t),
-          ],
-        );
-      },
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, _) {
+          final t = _c.value;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              _nebula(t, AppTheme.purple, cx: 0.22, cy: 0.28, rad: 760, baseA: 0.16, drift: 1, phase: 0.0),
+              _nebula(t, AppTheme.sky, cx: 0.82, cy: 0.18, rad: 620, baseA: 0.10, drift: 1, phase: 0.4),
+              _nebula(t, AppTheme.gold, cx: 0.62, cy: 0.7, rad: 520, baseA: 0.07, drift: 2, phase: 0.7),
+              CustomPaint(painter: _SkyPainter(_stars, _shoots, t)),
+            ],
+          );
+        },
+      ),
     );
   }
 
-  Widget _positionDoodle(BuildContext context, _Doodle d, double t) {
-    final size = MediaQuery.of(context).size;
-    final bob = math.sin(2 * math.pi * (t * d.bobCycles + d.phase)) * 10;
-    return Positioned(
-      left: d.x * size.width,
-      top: d.y * size.height + bob,
-      child: Opacity(
-        opacity: d.opacity,
-        child: Text(d.glyph, style: TextStyle(fontSize: d.size)),
-      ),
-    );
+  Widget _nebula(double t, Color color,
+      {required double cx,
+      required double cy,
+      required double rad,
+      required double baseA,
+      required int drift,
+      required double phase}) {
+    final wobble = 2 * math.pi * (t * drift + phase);
+    final dx = math.cos(wobble) * 26;
+    final dy = math.sin(wobble) * 20;
+    final pulse = 0.78 + 0.22 * (0.5 + 0.5 * math.sin(wobble));
+    return LayoutBuilder(builder: (context, c) {
+      return Positioned(
+        left: cx * c.maxWidth - rad / 2 + dx,
+        top: cy * c.maxHeight - rad / 2 + dy,
+        width: rad,
+        height: rad,
+        child: Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(
+              colors: [
+                color.withValues(alpha: baseA * pulse),
+                color.withValues(alpha: 0),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
   }
 }
 
 class _Star {
-  final double x, y, radius, baseOpacity, phase;
-  final int twinkleCycles, driftCycles;
+  final double x, y, r, baseAlpha, phase;
+  final int twinkle, drift;
   final Color color;
   const _Star({
     required this.x,
     required this.y,
-    required this.radius,
-    required this.baseOpacity,
-    required this.twinkleCycles,
-    required this.driftCycles,
+    required this.r,
+    required this.baseAlpha,
+    required this.twinkle,
+    required this.drift,
     required this.phase,
     required this.color,
   });
 }
 
-class _Doodle {
-  final String glyph;
-  final double x, y, size, phase, opacity;
-  final int bobCycles;
-  const _Doodle({
-    required this.glyph,
-    required this.x,
-    required this.y,
-    required this.size,
-    required this.bobCycles,
-    required this.phase,
-    required this.opacity,
+class _Shoot {
+  final double startT, durT, x0, y0, angle, len;
+  const _Shoot({
+    required this.startT,
+    required this.durT,
+    required this.x0,
+    required this.y0,
+    required this.angle,
+    required this.len,
   });
 }
 
-class _StarPainter extends CustomPainter {
+class _SkyPainter extends CustomPainter {
   final List<_Star> stars;
-  final double t; // 0..1
-  _StarPainter(this.stars, this.t);
+  final List<_Shoot> shoots;
+  final double t;
+  _SkyPainter(this.stars, this.shoots, this.t);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint();
+    final p = Paint();
     for (final s in stars) {
-      // Twinkle: integer cycles → identical at t=0 and t=1 (seamless).
-      final tw = 0.5 + 0.5 * math.sin(2 * math.pi * (t * s.twinkleCycles + s.phase));
-      final opacity = (s.baseOpacity * (0.35 + 0.65 * tw)).clamp(0.0, 1.0);
-
-      // Slow vertical drift, wraps seamlessly.
-      final y = ((s.y + t * s.driftCycles) % 1.0) * size.height;
+      final tw = 0.5 + 0.5 * math.sin(2 * math.pi * (t * s.twinkle + s.phase));
+      final a = (s.baseAlpha * (0.4 + 0.6 * tw)).clamp(0.0, 1.0);
+      final y = ((s.y + t * s.drift) % 1.0) * size.height;
       final x = s.x * size.width;
-
-      paint.color = s.color.withValues(alpha: opacity);
-      // Faint glow for the larger stars.
-      if (s.radius > 1.1) {
-        paint
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.0)
-          ..color = s.color.withValues(alpha: opacity * 0.5);
-        canvas.drawCircle(Offset(x, y), s.radius * 2.2, paint);
-        paint.maskFilter = null;
+      final c = s.color;
+      if (s.r > 1.2) {
+        p
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.2)
+          ..color = c.withValues(alpha: a * 0.55);
+        canvas.drawCircle(Offset(x, y), s.r * 2.4, p);
+        p.maskFilter = null;
       }
-      paint.color = s.color.withValues(alpha: opacity);
-      canvas.drawCircle(Offset(x, y), s.radius, paint);
+      p.color = c.withValues(alpha: a);
+      canvas.drawCircle(Offset(x, y), s.r, p);
+    }
+    _paintShoots(canvas, size);
+  }
+
+  void _paintShoots(Canvas canvas, Size size) {
+    for (final s in shoots) {
+      if (t < s.startT || t > s.startT + s.durT) continue;
+      final p = ((t - s.startT) / s.durT).clamp(0.0, 1.0);
+      final hx = s.x0 * size.width + math.cos(s.angle) * s.len * p * 2.4;
+      final hy = s.y0 * size.height + math.sin(s.angle) * s.len * p * 2.4;
+      final tx = hx - math.cos(s.angle) * s.len;
+      final ty = hy - math.sin(s.angle) * s.len;
+      // fade in then out
+      final alpha = (math.sin(math.pi * p)).clamp(0.0, 1.0);
+      final paint = Paint()
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round
+        ..shader = ui_gradient(Offset(tx, ty), Offset(hx, hy), alpha);
+      canvas.drawLine(Offset(tx, ty), Offset(hx, hy), paint);
+      // bright head
+      canvas.drawCircle(
+        Offset(hx, hy),
+        1.8,
+        Paint()..color = Colors.white.withValues(alpha: alpha),
+      );
     }
   }
 
+  Shader ui_gradient(Offset from, Offset to, double alpha) {
+    return LinearGradient(
+      colors: [
+        Colors.white.withValues(alpha: 0),
+        AppTheme.sky.withValues(alpha: alpha * 0.6),
+        Colors.white.withValues(alpha: alpha),
+      ],
+      stops: const [0, 0.6, 1],
+    ).createShader(Rect.fromPoints(from, to));
+  }
+
   @override
-  bool shouldRepaint(_StarPainter old) => old.t != t;
+  bool shouldRepaint(_SkyPainter old) => old.t != t;
 }
