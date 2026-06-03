@@ -42,15 +42,21 @@ class PortfolioSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: AppTheme.surface,
+      color: AppTheme.deepSpace,
       padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 96),
       child: Column(
         children: [
-          Text(
-            'Portfolio',
-            style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-              color: AppTheme.textPrimary,
-              fontWeight: FontWeight.bold,
+          ShaderMask(
+            shaderCallback: (rect) => const LinearGradient(
+              colors: AppTheme.brandGradient,
+            ).createShader(rect),
+            blendMode: BlendMode.srcIn,
+            child: Text(
+              'Current Projects',
+              style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
             ),
           ),
           const SizedBox(height: 64),
@@ -76,9 +82,9 @@ class _PortfolioCard extends StatelessWidget {
       width: 320,
       padding: const EdgeInsets.all(32),
       decoration: BoxDecoration(
-        color: AppTheme.background,
+        color: AppTheme.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: AppTheme.purple.withValues(alpha: 0.22)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
