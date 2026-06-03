@@ -6,6 +6,106 @@ import '../theme/app_theme.dart';
 bool isNarrow(BuildContext c) =>
     MediaQuery.of(c).size.width < AppTheme.mobileBreak;
 
+/// Fades + slides a child up once on first build, after an optional delay.
+/// Used to stagger a section's entrance for a premium feel.
+class Reveal extends StatefulWidget {
+  final Widget child;
+  final int delayMs;
+  final double offsetY;
+  const Reveal({super.key, required this.child, this.delayMs = 0, this.offsetY = 20});
+
+  @override
+  State<Reveal> createState() => _RevealState();
+}
+
+class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 620));
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(Duration(milliseconds: widget.delayMs), () {
+      if (mounted) _c.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) {
+        final v = Curves.easeOutCubic.transform(_c.value);
+        return Opacity(
+          opacity: v,
+          child: Transform.translate(
+              offset: Offset(0, (1 - v) * widget.offsetY), child: child),
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
+/// A small dot that gently pulses (a soft halo breathing in and out).
+class PulseDot extends StatefulWidget {
+  final Color color;
+  final double size;
+  const PulseDot({super.key, this.color = AppTheme.gold, this.size = 7});
+
+  @override
+  State<PulseDot> createState() => _PulseDotState();
+}
+
+class _PulseDotState extends State<PulseDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1600))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) {
+        final t = Curves.easeInOut.transform(_c.value);
+        return SizedBox(
+          width: widget.size + 8,
+          height: widget.size + 8,
+          child: Center(
+            child: Container(
+              width: widget.size,
+              height: widget.size,
+              decoration: BoxDecoration(
+                color: widget.color,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: widget.color.withValues(alpha: 0.2 + 0.5 * t),
+                    blurRadius: 4 + 8 * t,
+                    spreadRadius: 1 * t,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// Gradient-filled text (gold -> purple -> gold by default).
 class GradientText extends StatelessWidget {
   final String text;
@@ -160,8 +260,8 @@ class Chip2 extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(width: 7, height: 7, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)),
-          const SizedBox(width: 9),
+          PulseDot(color: dot, size: 7),
+          const SizedBox(width: 7),
           Text(text, style: AppTheme.eyebrow().copyWith(color: AppTheme.textSecondary, letterSpacing: 2.5, fontSize: 12)),
         ],
       ),

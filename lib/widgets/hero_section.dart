@@ -44,43 +44,55 @@ class HeroSection extends StatelessWidget {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Chip2('AI VENTURE STUDIO', dot: AppTheme.gold),
+                    const Reveal(
+                      delayMs: 0,
+                      child: Chip2('AI VENTURE STUDIO', dot: AppTheme.gold),
+                    ),
                     SizedBox(height: narrow ? 24 : 30),
-                    GradientText(
-                      'The AI layer for companies\nthat know their domain cold.',
-                      style: AppTheme.display(narrow ? 36 : 60),
+                    Reveal(
+                      delayMs: 90,
+                      child: GradientText(
+                        'The AI layer for companies\nthat know their domain cold.',
+                        style: AppTheme.display(narrow ? 36 : 60),
+                      ),
                     ),
                     SizedBox(height: narrow ? 20 : 26),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 660),
-                      child: Text(
-                        'You bring the expertise. We build the AI that makes it 10x, '
-                        'from dental imaging to pipe inspection. Partner with us, or '
-                        'start a self-serve MVP and grow from there.',
-                        textAlign: TextAlign.center,
-                        style: AppTheme.body(narrow ? 16 : 18.5),
+                    Reveal(
+                      delayMs: 180,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 640),
+                        child: Text(
+                          'You know your domain cold. We build the AI that makes it 10x. '
+                          'Agents do the work, you hold the gate, from dental imaging to '
+                          'pipe inspection.',
+                          textAlign: TextAlign.center,
+                          style: AppTheme.body(narrow ? 16 : 18.5),
+                        ),
                       ),
                     ),
                     SizedBox(height: narrow ? 32 : 40),
-                    Wrap(
-                      spacing: 16,
-                      runSpacing: 14,
-                      alignment: WrapAlignment.center,
-                      children: [
-                        PrimaryButton(
-                          label: 'Start a project',
-                          icon: Icons.arrow_forward_rounded,
-                          onTap: () => context.go('/start'),
-                        ),
-                        GhostButton(
-                          label: 'See our work',
-                          icon: Icons.grid_view_rounded,
-                          onTap: onSeeWork,
-                        ),
-                      ],
+                    Reveal(
+                      delayMs: 270,
+                      child: Wrap(
+                        spacing: 16,
+                        runSpacing: 14,
+                        alignment: WrapAlignment.center,
+                        children: [
+                          PrimaryButton(
+                            label: 'Start a project',
+                            icon: Icons.arrow_forward_rounded,
+                            onTap: () => context.go('/start'),
+                          ),
+                          GhostButton(
+                            label: 'See our work',
+                            icon: Icons.grid_view_rounded,
+                            onTap: onSeeWork,
+                          ),
+                        ],
+                      ),
                     ),
                     SizedBox(height: narrow ? 40 : 52),
-                    _trustRow(narrow),
+                    Reveal(delayMs: 360, child: _trustRow(narrow)),
                   ],
                 ),
               ),
@@ -104,16 +116,24 @@ class HeroSection extends StatelessWidget {
         Text('CURRENTLY BUILDING',
             style: AppTheme.eyebrow()
                 .copyWith(color: AppTheme.textMuted, fontSize: 11, letterSpacing: 3)),
-        const SizedBox(height: 14),
+        const SizedBox(height: 16),
         Wrap(
-          spacing: narrow ? 20 : 36,
-          runSpacing: 10,
+          spacing: 12,
+          runSpacing: 12,
           alignment: WrapAlignment.center,
           children: [
             for (final n in ['Mandible', 'WickHackers', 'Myelin / GYRI'])
-              Text(n,
-                  style: AppTheme.heading(narrow ? 15 : 17,
-                      color: AppTheme.textSecondary)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.03),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                ),
+                child: Text(n,
+                    style: AppTheme.heading(narrow ? 14 : 15.5,
+                        color: AppTheme.textSecondary)),
+              ),
           ],
         ),
       ],
