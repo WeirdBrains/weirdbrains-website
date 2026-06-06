@@ -11,10 +11,11 @@ import '../widgets/ui.dart';
 import '../widgets/genui_read.dart';
 
 /// The portal. Problem-first, voice-enabled, agentic. The AI reads the problem,
-/// asks clarifying questions (with file upload), assembles a brief, then hands a
-/// real brief to a human. State flows:
-///   problem -> thinking -> scoped -> clarify -> briefing -> brief -> contact -> done
-enum _Stage { problem, thinking, scoped, clarify, briefing, brief, contact, done }
+/// then hones a brief with the user over a back-and-forth (ping-pong), with
+/// voice and file attachments throughout, before handing a real brief to a
+/// human. State flows:
+///   problem -> thinking -> scoped -> conversation -> contact -> done
+enum _Stage { problem, thinking, scoped, conversation, contact, done }
 
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
@@ -25,6 +26,7 @@ class StartScreen extends StatefulWidget {
 
 class _StartScreenState extends State<StartScreen> {
   final _problem = TextEditingController();
+  final _chatInput = TextEditingController();
   final _name = TextEditingController();
   final _email = TextEditingController();
   final _company = TextEditingController();
@@ -33,16 +35,17 @@ class _StartScreenState extends State<StartScreen> {
   final _voice = VoiceService();
   bool _voiceAvailable = false;
   bool _voiceInited = false;
-  bool _listening = false;
+  bool _listening = false; // problem-stage mic
+  bool _chatListening = false; // conversation-stage mic
   String _preVoiceText = '';
 
   _Stage _stage = _Stage.problem;
   Map<String, Object?>? _readSurface;
-  List<Map<String, Object?>>? _questions;
-  final Map<String, String> _answers = {};
+  final List<Map<String, String>> _chat = []; // [{role: 'user'|'ai', text}]
+  Map<String, Object?>? _artifact; // the living brief, updated each turn
+  bool _sending = false;
   final List<Map<String, Object?>> _files = [];
   bool _uploading = false;
-  Map<String, Object?>? _briefSurface;
   bool _submitting = false;
   String? _error;
 
@@ -68,6 +71,7 @@ class _StartScreenState extends State<StartScreen> {
   void dispose() {
     _voice.stop();
     _problem.dispose();
+    _chatInput.dispose();
     _name.dispose();
     _email.dispose();
     _company.dispose();
@@ -140,14 +144,10 @@ class _StartScreenState extends State<StartScreen> {
       _submitting = true;
       _error = null;
     });
+    // The whole ping-pong transcript travels to the human as the discovery.
     final discovery = <Map<String, Object?>>[
-      for (final q in (_questions ?? const <Map<String, Object?>>[]))
-        if (q['type'] != 'files' &&
-            (_answers[q['id'] as String? ?? ''] ?? '').trim().isNotEmpty)
-          {
-            'q': (q['label'] as String?) ?? (q['id'] as String? ?? ''),
-            'a': (_answers[q['id'] as String? ?? ''] ?? '').trim(),
-          },
+      for (final m in _chat)
+        {'q': m['role'] == 'ai' ? 'AI' : 'You', 'a': m['text'] ?? ''},
     ];
     final err = await const IntakeService().submit(IntakeRequest(
       company: _company.text.trim().isEmpty
@@ -155,7 +155,7 @@ class _StartScreenState extends State<StartScreen> {
           : _company.text.trim(),
       projectDescription: _problem.text.trim(),
       budgetRange: 'Not specified',
-      timeline: _answers['timeline'] ?? 'Not specified',
+      timeline: 'Not specified',
       contactName: _name.text.trim(),
       contactEmail: _email.text.trim(),
       discovery: discovery,
@@ -215,9 +215,7 @@ class _StartScreenState extends State<StartScreen> {
         _Stage.problem => _problemStage(),
         _Stage.thinking => _loadingStage('Reading your problem...'),
         _Stage.scoped => _scopedStage(),
-        _Stage.clarify => _clarifyStage(),
-        _Stage.briefing => _loadingStage('Building your brief...'),
-        _Stage.brief => _briefStage(),
+        _Stage.conversation => _conversationStage(),
         _Stage.contact => _contactStage(),
         _Stage.done => _doneStage(),
       },
@@ -375,7 +373,7 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Loading (read / brief) ----
+  // ---- Loading ----
   Widget _loadingStage(String label) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 28),
@@ -411,8 +409,6 @@ class _StartScreenState extends State<StartScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        // The read is an A2UI tree built by the backend and rendered blindly
-        // through the branded GenUI catalog. Deterministic now, model next.
         GenUiRead(key: ValueKey(_readSurface), surface: _readSurface!),
         const SizedBox(height: 26),
         Row(
@@ -429,9 +425,9 @@ class _StartScreenState extends State<StartScreen> {
             ),
             const Spacer(),
             PrimaryButton(
-              label: 'Sharpen this',
+              label: 'Hone it with AI',
               icon: Icons.arrow_forward_rounded,
-              onTap: _startClarify,
+              onTap: _startConversation,
             ),
           ],
         ),
@@ -439,29 +435,75 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Stage 4: clarify (AI discovery questions + file upload) ----
-  Future<void> _startClarify() async {
-    final qs = await const PortalService().clarify(_problem.text.trim());
-    if (!mounted) return;
+  // ---- Stage 4: ping-pong refinement (artifact + chat) ----
+  void _startConversation() {
     setState(() {
-      _questions = qs;
+      _artifact = _readSurface;
+      _chat
+        ..clear()
+        ..add({
+          'role': 'ai',
+          'text':
+              "Here's my first read. Tell me where it's off, add detail, or "
+                  "attach an example. When it looks right, send it to a human.",
+        });
       _error = null;
-      _stage = _Stage.clarify;
+      _stage = _Stage.conversation;
     });
   }
 
-  Future<void> _submitClarify() async {
+  Future<void> _sendRefine() async {
+    final msg = _chatInput.text.trim();
+    if (msg.isEmpty || _sending) return;
+    await _voice.stop();
+    final history = [
+      for (final m in _chat) {'role': m['role'], 'text': m['text']},
+    ];
     setState(() {
+      _chat.add({'role': 'user', 'text': msg});
+      _chatInput.clear();
+      _chatListening = false;
+      _sending = true;
       _error = null;
-      _stage = _Stage.briefing;
     });
-    final surface = await const PortalService()
-        .brief(_problem.text.trim(), _answers, _files);
+    final res = await const PortalService()
+        .refine(_problem.text.trim(), history, msg, _files);
     if (!mounted) return;
     setState(() {
-      _briefSurface = surface;
-      _stage = _Stage.brief;
+      _chat.add({'role': 'ai', 'text': res['reply']?.toString() ?? 'Updated.'});
+      final b = res['brief'];
+      if (b is Map) _artifact = b.cast<String, Object?>();
+      _sending = false;
     });
+  }
+
+  Future<void> _toggleChatMic() async {
+    if (_chatListening) {
+      await _voice.stop();
+      if (mounted) setState(() => _chatListening = false);
+      return;
+    }
+    if (!_voiceInited) {
+      _voiceInited = true;
+      final ok = await _voice.init();
+      if (!ok) {
+        if (mounted) setState(() => _voiceAvailable = false);
+        return;
+      }
+    }
+    final pre = _chatInput.text.trim();
+    setState(() => _chatListening = true);
+    await _voice.start(
+      onText: (t) {
+        _chatInput.text = pre.isEmpty ? t : '$pre $t';
+        _chatInput.selection =
+            TextSelection.collapsed(offset: _chatInput.text.length);
+        setState(() {});
+      },
+      onDone: () {
+        if (mounted) setState(() => _chatListening = false);
+      },
+    );
   }
 
   Future<void> _pickFiles() async {
@@ -479,233 +521,6 @@ class _StartScreenState extends State<StartScreen> {
     if (mounted) setState(() => _uploading = false);
   }
 
-  Widget _clarifyStage() {
-    final qs = _questions ?? const <Map<String, Object?>>[];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
-            const SizedBox(width: 10),
-            Text('A few questions',
-                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Text('Help us sharpen it', style: AppTheme.heading(24)),
-        const SizedBox(height: 8),
-        Text('Answer what you can. Skip anything optional.',
-            style: AppTheme.body(14.5)),
-        const SizedBox(height: 24),
-        for (final q in qs) ...[
-          _questionField(q),
-          const SizedBox(height: 20),
-        ],
-        Row(
-          children: [
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.scoped),
-              builder: (h) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                child: Text('Back',
-                    style: AppTheme.body(15,
-                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                        height: 1.0)),
-              ),
-            ),
-            const Spacer(),
-            PrimaryButton(
-              label: 'Build my brief',
-              icon: Icons.arrow_forward_rounded,
-              onTap: _submitClarify,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _questionField(Map<String, Object?> q) {
-    final id = q['id'] as String? ?? '';
-    final label = q['label'] as String? ?? '';
-    final hint = q['hint'] as String?;
-    final type = q['type'] as String? ?? 'text';
-    final optional = q['optional'] == true;
-
-    Widget control;
-    switch (type) {
-      case 'files':
-        control = _fileControl(hint);
-      case 'choice':
-        final options = ((q['options'] as List?) ?? const []).cast<String>();
-        control = _choiceControl(id, options);
-      case 'longtext':
-        control = _textControl(id, lines: 3);
-      default:
-        control = _textControl(id, lines: 1);
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
-          children: [
-            Flexible(child: Text(label, style: AppTheme.heading(15.5))),
-            if (optional) ...[
-              const SizedBox(width: 8),
-              Text('optional',
-                  style:
-                      AppTheme.body(12, color: AppTheme.textMuted, height: 1.0)),
-            ],
-          ],
-        ),
-        if (hint != null && type != 'files') ...[
-          const SizedBox(height: 5),
-          Text(hint, style: AppTheme.body(13, color: AppTheme.textMuted)),
-        ],
-        const SizedBox(height: 10),
-        control,
-      ],
-    );
-  }
-
-  Widget _textControl(String id, {int lines = 1}) {
-    return TextField(
-      maxLines: lines,
-      minLines: lines,
-      style: AppTheme.body(15.5, color: AppTheme.textPrimary, height: 1.4),
-      onChanged: (v) => _answers[id] = v,
-      decoration: InputDecoration(
-        filled: true,
-        fillColor: AppTheme.background.withValues(alpha: 0.6),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-        enabledBorder: const ShapedInputBorder(
-            borderSide: BorderSide(color: AppTheme.border), shape: _fieldShape),
-        focusedBorder: const ShapedInputBorder(
-            borderSide: BorderSide(color: AppTheme.purple, width: 1.5),
-            shape: _fieldShape),
-      ),
-    );
-  }
-
-  Widget _choiceControl(String id, List<String> options) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final opt in options)
-          Hoverable(
-            onTap: () => setState(() => _answers[id] = opt),
-            builder: (h) {
-              final selected = _answers[id] == opt;
-              return Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                decoration: BoxDecoration(
-                  color: selected
-                      ? AppTheme.purple.withValues(alpha: 0.2)
-                      : (h
-                          ? Colors.white.withValues(alpha: 0.05)
-                          : Colors.white.withValues(alpha: 0.02)),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(
-                      color: selected ? AppTheme.purple : AppTheme.border),
-                ),
-                child: Text(opt,
-                    style: AppTheme.body(13.5,
-                        color: selected
-                            ? AppTheme.purpleBright
-                            : AppTheme.textSecondary,
-                        height: 1.0)),
-              );
-            },
-          ),
-      ],
-    );
-  }
-
-  Widget _fileControl(String? hint) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (hint != null) ...[
-          Text(hint, style: AppTheme.body(13, color: AppTheme.textMuted)),
-          const SizedBox(height: 10),
-        ],
-        Hoverable(
-          onTap: _uploading ? null : _pickFiles,
-          builder: (h) => Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
-            decoration: ShapeDecoration(
-              color: h
-                  ? AppTheme.purple.withValues(alpha: 0.06)
-                  : AppTheme.background.withValues(alpha: 0.5),
-              shape: RoundedSuperellipseBorder(
-                borderRadius: BorderRadius.circular(14),
-                side: BorderSide(
-                    color: h
-                        ? AppTheme.purple.withValues(alpha: 0.5)
-                        : AppTheme.border),
-              ),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                    _uploading
-                        ? Icons.hourglass_top_rounded
-                        : Icons.upload_file_rounded,
-                    size: 18,
-                    color: AppTheme.textSecondary),
-                const SizedBox(width: 10),
-                Text(_uploading ? 'Uploading...' : 'Choose files',
-                    style: AppTheme.body(14,
-                        color: AppTheme.textSecondary, height: 1.0)),
-              ],
-            ),
-          ),
-        ),
-        if (_files.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          for (final file in _files)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.description_outlined,
-                      size: 16, color: AppTheme.sky),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(file['name']?.toString() ?? 'file',
-                        style: AppTheme.body(13.5,
-                            color: AppTheme.textSecondary, height: 1.2),
-                        overflow: TextOverflow.ellipsis),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(_fmtSize(file['size']),
-                      style: AppTheme.body(12,
-                          color: AppTheme.textMuted, height: 1.0)),
-                  const SizedBox(width: 10),
-                  Hoverable(
-                    onTap: () => setState(() => _files.remove(file)),
-                    builder: (h) => Icon(Icons.close_rounded,
-                        size: 16,
-                        color:
-                            h ? const Color(0xFFFF8585) : AppTheme.textMuted),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ],
-    );
-  }
-
   String _fmtSize(Object? size) {
     final n = (size is num) ? size.toInt() : 0;
     if (n < 1024) return '${n}B';
@@ -713,8 +528,7 @@ class _StartScreenState extends State<StartScreen> {
     return '${(n / (1024 * 1024)).toStringAsFixed(1)}MB';
   }
 
-  // ---- Stage 5: the brief (server-assembled, rendered via GenUI) ----
-  Widget _briefStage() {
+  Widget _conversationStage() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -722,25 +536,56 @@ class _StartScreenState extends State<StartScreen> {
           children: [
             const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
             const SizedBox(width: 10),
-            Text('Your brief',
+            Text('Honing your brief',
                 style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+            const Spacer(),
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.scoped),
+              builder: (h) => Text('Restart',
+                  style: AppTheme.body(13,
+                      color: h ? AppTheme.textPrimary : AppTheme.textMuted,
+                      height: 1.0)),
+            ),
           ],
         ),
         const SizedBox(height: 16),
-        GenUiRead(key: ValueKey(_briefSurface), surface: _briefSurface!),
-        const SizedBox(height: 26),
-        Row(
-          children: [
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.clarify),
-              builder: (h) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                child: Text('Edit answers',
-                    style: AppTheme.body(15,
-                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                        height: 1.0)),
+        // The living artifact: the brief, updated every turn.
+        if (_artifact != null)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: ShapeDecoration(
+              color: AppTheme.background.withValues(alpha: 0.4),
+              shape: RoundedSuperellipseBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: AppTheme.border),
               ),
             ),
+            child: GenUiRead(key: ValueKey(_artifact), surface: _artifact!),
+          ),
+        const SizedBox(height: 22),
+        // The dialogue.
+        for (final m in _chat) ...[
+          _chatBubble(m['role'] ?? 'ai', m['text'] ?? ''),
+          const SizedBox(height: 12),
+        ],
+        if (_sending) ...[
+          _chatBubble('ai', 'Thinking...'),
+          const SizedBox(height: 12),
+        ],
+        if (_files.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          for (final file in _files) _fileChip(file),
+        ],
+        const SizedBox(height: 8),
+        _chatInputBar(),
+        if (_error != null) ...[
+          const SizedBox(height: 12),
+          Text(_error!,
+              style: AppTheme.body(14, color: const Color(0xFFFF8585))),
+        ],
+        const SizedBox(height: 20),
+        Row(
+          children: [
             const Spacer(),
             PrimaryButton(
               label: 'Send to a human',
@@ -753,7 +598,179 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Stage 6: contact ----
+  Widget _chatBubble(String role, String text) {
+    final isAi = role == 'ai';
+    return Align(
+      alignment: isAi ? Alignment.centerLeft : Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: ShapeDecoration(
+            color: isAi
+                ? Colors.white.withValues(alpha: 0.04)
+                : AppTheme.purple.withValues(alpha: 0.16),
+            shape: RoundedSuperellipseBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                  color: isAi
+                      ? AppTheme.border
+                      : AppTheme.purple.withValues(alpha: 0.4)),
+            ),
+          ),
+          child: Text(text,
+              style: AppTheme.body(14.5,
+                  color: isAi ? AppTheme.textSecondary : AppTheme.textPrimary,
+                  height: 1.45)),
+        ),
+      ),
+    );
+  }
+
+  Widget _fileChip(Map<String, Object?> file) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          const Icon(Icons.description_outlined, size: 16, color: AppTheme.sky),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(file['name']?.toString() ?? 'file',
+                style: AppTheme.body(13.5,
+                    color: AppTheme.textSecondary, height: 1.2),
+                overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 8),
+          Text(_fmtSize(file['size']),
+              style: AppTheme.body(12, color: AppTheme.textMuted, height: 1.0)),
+          const SizedBox(width: 10),
+          Hoverable(
+            onTap: () => setState(() => _files.remove(file)),
+            builder: (h) => Icon(Icons.close_rounded,
+                size: 16,
+                color: h ? const Color(0xFFFF8585) : AppTheme.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chatInputBar() {
+    return Container(
+      decoration: ShapeDecoration(
+        color: AppTheme.background.withValues(alpha: 0.6),
+        shape: RoundedSuperellipseBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: _chatListening ? AppTheme.purple : AppTheme.border,
+            width: _chatListening ? 1.5 : 1,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          TextField(
+            controller: _chatInput,
+            minLines: 1,
+            maxLines: 4,
+            style: AppTheme.body(15, color: AppTheme.textPrimary, height: 1.45),
+            onSubmitted: (_) => _sendRefine(),
+            decoration: InputDecoration(
+              hintText: 'Add detail, correct us, or ask a question...',
+              hintStyle: AppTheme.body(14.5, color: AppTheme.textMuted),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            child: Row(
+              children: [
+                _iconChip(
+                    _uploading
+                        ? Icons.hourglass_top_rounded
+                        : Icons.attach_file_rounded,
+                    _uploading ? 'Uploading' : 'Attach',
+                    _uploading ? null : _pickFiles),
+                const SizedBox(width: 8),
+                if (_voiceAvailable)
+                  _iconChip(
+                      _chatListening
+                          ? Icons.stop_rounded
+                          : Icons.mic_none_rounded,
+                      _chatListening ? 'Stop' : 'Speak',
+                      _toggleChatMic,
+                      active: _chatListening),
+                const Spacer(),
+                _sendButton(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _iconChip(IconData icon, String label, VoidCallback? onTap,
+      {bool active = false}) {
+    return Hoverable(
+      onTap: onTap,
+      builder: (h) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: active
+              ? AppTheme.purple.withValues(alpha: 0.2)
+              : (h ? Colors.white.withValues(alpha: 0.06) : Colors.transparent),
+          borderRadius: BorderRadius.circular(999),
+          border:
+              Border.all(color: active ? AppTheme.purple : AppTheme.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon,
+                size: 16,
+                color: active ? AppTheme.purpleBright : AppTheme.textSecondary),
+            const SizedBox(width: 6),
+            Text(label,
+                style: AppTheme.body(13,
+                    color:
+                        active ? AppTheme.purpleBright : AppTheme.textSecondary,
+                    height: 1.0)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sendButton() {
+    return Hoverable(
+      onTap: _sending ? null : _sendRefine,
+      builder: (h) => Opacity(
+        opacity: _sending ? 0.6 : 1,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Send',
+                  style: AppTheme.body(13.5, color: Colors.white, height: 1.0)
+                      .copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(width: 6),
+              const Icon(Icons.arrow_upward_rounded,
+                  size: 15, color: Colors.white),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- Stage 5: contact ----
   Widget _contactStage() {
     return Form(
       key: _formKey,
@@ -781,7 +798,7 @@ class _StartScreenState extends State<StartScreen> {
               Hoverable(
                 onTap: _submitting
                     ? null
-                    : () => setState(() => _stage = _Stage.brief),
+                    : () => setState(() => _stage = _Stage.conversation),
                 builder: (h) => Padding(
                   padding:
                       const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
@@ -821,7 +838,7 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Stage 5: done ----
+  // ---- Stage 6: done ----
   Widget _doneStage() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

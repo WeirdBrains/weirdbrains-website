@@ -64,6 +64,32 @@ class PortalService {
     }
   }
 
+  /// One ping-pong refinement turn. Returns {reply, brief, done}.
+  Future<Map<String, Object?>> refine(
+      String problem,
+      List<Map<String, Object?>> history,
+      String message,
+      List<Map<String, Object?>> files) async {
+    try {
+      return await _postJson(
+        '/portal/refine',
+        {
+          'problem': problem,
+          'history': history,
+          'message': message,
+          'files': files,
+        },
+        timeout: const Duration(seconds: 40),
+      );
+    } catch (_) {
+      return {
+        'reply': 'Noted. Add anything else, or send it to a human.',
+        'brief': _fallbackBrief(const {}, files),
+        'done': true,
+      };
+    }
+  }
+
   /// Upload one file's bytes; returns its metadata {id, name, size}.
   Future<Map<String, Object?>> upload(String name, List<int> bytes) async {
     final uri = _uri('/portal/upload?name=${Uri.encodeQueryComponent(name)}');
