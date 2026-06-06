@@ -71,7 +71,15 @@ class _GenUiReadState extends State<GenUiRead> {
 // ---- Branded catalog ----
 
 final Catalog _wbCatalog = Catalog(
-  [_readRoot, _domainChip, _sectionTitle, _approachStep, _callout],
+  [
+    _readRoot,
+    _domainChip,
+    _sectionTitle,
+    _approachStep,
+    _callout,
+    _phaseCard,
+    _effortSignal,
+  ],
   catalogId: 'wb',
 );
 
@@ -199,6 +207,100 @@ final _callout = CatalogItem(
           border: Border.all(color: AppTheme.purple.withValues(alpha: 0.2)),
         ),
         child: Text(text, style: AppTheme.body(13.5, height: 1.5)),
+      ),
+    );
+  },
+);
+
+/// A phase in the rough plan: a small label chip, a title, and a line of copy.
+final _phaseCard = CatalogItem(
+  name: 'PhaseCard',
+  dataSchema: S.object(
+    description: 'A phase in the rough plan.',
+    properties: <String, S>{
+      'label': S.string(),
+      'title': S.string(),
+      'text': S.string(),
+    },
+    required: ['label', 'title', 'text'],
+  ),
+  widgetBuilder: (c) {
+    final p = _props(c);
+    final label = p['label'] as String? ?? '';
+    final title = p['title'] as String? ?? '';
+    final text = p['text'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: ShapeDecoration(
+          color: Colors.white.withValues(alpha: 0.03),
+          shape: RoundedSuperellipseBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: AppTheme.border),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.purple.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    label,
+                    style: AppTheme.body(11.5,
+                            color: AppTheme.purpleBright, height: 1.0)
+                        .copyWith(
+                            fontWeight: FontWeight.w600, letterSpacing: 0.5),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Flexible(child: Text(title, style: AppTheme.heading(15.5))),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(text, style: AppTheme.body(14, height: 1.5)),
+          ],
+        ),
+      ),
+    );
+  },
+);
+
+/// A labeled feasibility/effort signal line.
+final _effortSignal = CatalogItem(
+  name: 'EffortSignal',
+  dataSchema: S.object(
+    description: 'A labeled feasibility or effort signal.',
+    properties: <String, S>{'label': S.string(), 'value': S.string()},
+    required: ['label', 'value'],
+  ),
+  widgetBuilder: (c) {
+    final p = _props(c);
+    final label = p['label'] as String? ?? '';
+    final value = p['value'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 16),
+      child: Row(
+        children: [
+          const Icon(Icons.insights_rounded, size: 16, color: AppTheme.gold),
+          const SizedBox(width: 8),
+          Text('$label: ',
+              style: AppTheme.body(13.5, color: AppTheme.textMuted, height: 1.2)),
+          Flexible(
+            child: Text(
+              value,
+              style: AppTheme.body(13.5, color: AppTheme.gold, height: 1.2)
+                  .copyWith(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
       ),
     );
   },

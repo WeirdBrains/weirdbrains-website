@@ -1,18 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
 import '../services/voice_service.dart';
 import '../services/voice_support.dart';
-import '../services/portal_read_service.dart';
+import '../services/portal_service.dart';
 import '../widgets/starfield.dart';
 import '../widgets/ui.dart';
 import '../widgets/genui_read.dart';
 
-/// The portal. Problem-first, voice-enabled, and it shows AI reducing friction
-/// on the way to capturing a lead. State flows:
-///   problem -> thinking -> scoped -> contact -> done
-enum _Stage { problem, thinking, scoped, contact, done }
+/// The portal. Problem-first, voice-enabled, agentic. The AI reads the problem,
+/// asks clarifying questions (with file upload), assembles a brief, then hands a
+/// real brief to a human. State flows:
+///   problem -> thinking -> scoped -> clarify -> briefing -> brief -> contact -> done
+enum _Stage { problem, thinking, scoped, clarify, briefing, brief, contact, done }
 
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
@@ -36,6 +38,11 @@ class _StartScreenState extends State<StartScreen> {
 
   _Stage _stage = _Stage.problem;
   Map<String, Object?>? _readSurface;
+  List<Map<String, Object?>>? _questions;
+  final Map<String, String> _answers = {};
+  final List<Map<String, Object?>> _files = [];
+  bool _uploading = false;
+  Map<String, Object?>? _briefSurface;
   bool _submitting = false;
   String? _error;
 
@@ -119,7 +126,7 @@ class _StartScreenState extends State<StartScreen> {
       _error = null;
       _stage = _Stage.thinking;
     });
-    final surface = await const PortalReadService().read(_problem.text.trim());
+    final surface = await const PortalService().read(_problem.text.trim());
     if (!mounted) return;
     setState(() {
       _readSurface = surface;
@@ -139,7 +146,7 @@ class _StartScreenState extends State<StartScreen> {
           : _company.text.trim(),
       projectDescription: _problem.text.trim(),
       budgetRange: 'Not specified',
-      timeline: 'Not specified',
+      timeline: _answers['timeline'] ?? 'Not specified',
       contactName: _name.text.trim(),
       contactEmail: _email.text.trim(),
     ));
@@ -195,8 +202,11 @@ class _StartScreenState extends State<StartScreen> {
       ),
       child: switch (_stage) {
         _Stage.problem => _problemStage(),
-        _Stage.thinking => _thinkingStage(),
+        _Stage.thinking => _loadingStage('Reading your problem...'),
         _Stage.scoped => _scopedStage(),
+        _Stage.clarify => _clarifyStage(),
+        _Stage.briefing => _loadingStage('Building your brief...'),
+        _Stage.brief => _briefStage(),
         _Stage.contact => _contactStage(),
         _Stage.done => _doneStage(),
       },
@@ -354,25 +364,22 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Stage 2: thinking ----
-  Widget _thinkingStage() {
+  // ---- Loading (read / brief) ----
+  Widget _loadingStage(String label) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: AppTheme.purpleBright),
-              ),
-              const SizedBox(width: 14),
-              Text('Reading your problem...',
-                  style: AppTheme.heading(18, color: AppTheme.textSecondary)),
-            ],
+          const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: AppTheme.purpleBright),
+          ),
+          const SizedBox(width: 14),
+          Flexible(
+            child: Text(label,
+                style: AppTheme.heading(18, color: AppTheme.textSecondary)),
           ),
         ],
       ),
@@ -395,7 +402,7 @@ class _StartScreenState extends State<StartScreen> {
         const SizedBox(height: 16),
         // The read is an A2UI tree built by the backend and rendered blindly
         // through the branded GenUI catalog. Deterministic now, model next.
-        GenUiRead(surface: _readSurface!),
+        GenUiRead(key: ValueKey(_readSurface), surface: _readSurface!),
         const SizedBox(height: 26),
         Row(
           children: [
@@ -404,6 +411,320 @@ class _StartScreenState extends State<StartScreen> {
               builder: (h) => Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
                 child: Text('Edit',
+                    style: AppTheme.body(15,
+                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                        height: 1.0)),
+              ),
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Sharpen this',
+              icon: Icons.arrow_forward_rounded,
+              onTap: _startClarify,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ---- Stage 4: clarify (AI discovery questions + file upload) ----
+  Future<void> _startClarify() async {
+    final qs = await const PortalService().clarify(_problem.text.trim());
+    if (!mounted) return;
+    setState(() {
+      _questions = qs;
+      _error = null;
+      _stage = _Stage.clarify;
+    });
+  }
+
+  Future<void> _submitClarify() async {
+    setState(() {
+      _error = null;
+      _stage = _Stage.briefing;
+    });
+    final surface = await const PortalService()
+        .brief(_problem.text.trim(), _answers, _files);
+    if (!mounted) return;
+    setState(() {
+      _briefSurface = surface;
+      _stage = _Stage.brief;
+    });
+  }
+
+  Future<void> _pickFiles() async {
+    final result = await FilePicker.platform
+        .pickFiles(allowMultiple: true, withData: true);
+    if (result == null) return;
+    setState(() => _uploading = true);
+    for (final f in result.files) {
+      final bytes = f.bytes;
+      if (bytes == null) continue;
+      final meta = await const PortalService().upload(f.name, bytes);
+      if (!mounted) return;
+      setState(() => _files.add(meta));
+    }
+    if (mounted) setState(() => _uploading = false);
+  }
+
+  Widget _clarifyStage() {
+    final qs = _questions ?? const <Map<String, Object?>>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
+            const SizedBox(width: 10),
+            Text('A few questions',
+                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Text('Help us sharpen it', style: AppTheme.heading(24)),
+        const SizedBox(height: 8),
+        Text('Answer what you can. Skip anything optional.',
+            style: AppTheme.body(14.5)),
+        const SizedBox(height: 24),
+        for (final q in qs) ...[
+          _questionField(q),
+          const SizedBox(height: 20),
+        ],
+        Row(
+          children: [
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.scoped),
+              builder: (h) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                child: Text('Back',
+                    style: AppTheme.body(15,
+                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                        height: 1.0)),
+              ),
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Build my brief',
+              icon: Icons.arrow_forward_rounded,
+              onTap: _submitClarify,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _questionField(Map<String, Object?> q) {
+    final id = q['id'] as String? ?? '';
+    final label = q['label'] as String? ?? '';
+    final hint = q['hint'] as String?;
+    final type = q['type'] as String? ?? 'text';
+    final optional = q['optional'] == true;
+
+    Widget control;
+    switch (type) {
+      case 'files':
+        control = _fileControl(hint);
+      case 'choice':
+        final options = ((q['options'] as List?) ?? const []).cast<String>();
+        control = _choiceControl(id, options);
+      case 'longtext':
+        control = _textControl(id, lines: 3);
+      default:
+        control = _textControl(id, lines: 1);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Flexible(child: Text(label, style: AppTheme.heading(15.5))),
+            if (optional) ...[
+              const SizedBox(width: 8),
+              Text('optional',
+                  style:
+                      AppTheme.body(12, color: AppTheme.textMuted, height: 1.0)),
+            ],
+          ],
+        ),
+        if (hint != null && type != 'files') ...[
+          const SizedBox(height: 5),
+          Text(hint, style: AppTheme.body(13, color: AppTheme.textMuted)),
+        ],
+        const SizedBox(height: 10),
+        control,
+      ],
+    );
+  }
+
+  Widget _textControl(String id, {int lines = 1}) {
+    return TextField(
+      maxLines: lines,
+      minLines: lines,
+      style: AppTheme.body(15.5, color: AppTheme.textPrimary, height: 1.4),
+      onChanged: (v) => _answers[id] = v,
+      decoration: InputDecoration(
+        filled: true,
+        fillColor: AppTheme.background.withValues(alpha: 0.6),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+        enabledBorder: const ShapedInputBorder(
+            borderSide: BorderSide(color: AppTheme.border), shape: _fieldShape),
+        focusedBorder: const ShapedInputBorder(
+            borderSide: BorderSide(color: AppTheme.purple, width: 1.5),
+            shape: _fieldShape),
+      ),
+    );
+  }
+
+  Widget _choiceControl(String id, List<String> options) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final opt in options)
+          Hoverable(
+            onTap: () => setState(() => _answers[id] = opt),
+            builder: (h) {
+              final selected = _answers[id] == opt;
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? AppTheme.purple.withValues(alpha: 0.2)
+                      : (h
+                          ? Colors.white.withValues(alpha: 0.05)
+                          : Colors.white.withValues(alpha: 0.02)),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                      color: selected ? AppTheme.purple : AppTheme.border),
+                ),
+                child: Text(opt,
+                    style: AppTheme.body(13.5,
+                        color: selected
+                            ? AppTheme.purpleBright
+                            : AppTheme.textSecondary,
+                        height: 1.0)),
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+  Widget _fileControl(String? hint) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (hint != null) ...[
+          Text(hint, style: AppTheme.body(13, color: AppTheme.textMuted)),
+          const SizedBox(height: 10),
+        ],
+        Hoverable(
+          onTap: _uploading ? null : _pickFiles,
+          builder: (h) => Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            decoration: ShapeDecoration(
+              color: h
+                  ? AppTheme.purple.withValues(alpha: 0.06)
+                  : AppTheme.background.withValues(alpha: 0.5),
+              shape: RoundedSuperellipseBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: BorderSide(
+                    color: h
+                        ? AppTheme.purple.withValues(alpha: 0.5)
+                        : AppTheme.border),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                    _uploading
+                        ? Icons.hourglass_top_rounded
+                        : Icons.upload_file_rounded,
+                    size: 18,
+                    color: AppTheme.textSecondary),
+                const SizedBox(width: 10),
+                Text(_uploading ? 'Uploading...' : 'Choose files',
+                    style: AppTheme.body(14,
+                        color: AppTheme.textSecondary, height: 1.0)),
+              ],
+            ),
+          ),
+        ),
+        if (_files.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          for (final file in _files)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.description_outlined,
+                      size: 16, color: AppTheme.sky),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(file['name']?.toString() ?? 'file',
+                        style: AppTheme.body(13.5,
+                            color: AppTheme.textSecondary, height: 1.2),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(_fmtSize(file['size']),
+                      style: AppTheme.body(12,
+                          color: AppTheme.textMuted, height: 1.0)),
+                  const SizedBox(width: 10),
+                  Hoverable(
+                    onTap: () => setState(() => _files.remove(file)),
+                    builder: (h) => Icon(Icons.close_rounded,
+                        size: 16,
+                        color:
+                            h ? const Color(0xFFFF8585) : AppTheme.textMuted),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  String _fmtSize(Object? size) {
+    final n = (size is num) ? size.toInt() : 0;
+    if (n < 1024) return '${n}B';
+    if (n < 1024 * 1024) return '${(n / 1024).toStringAsFixed(0)}KB';
+    return '${(n / (1024 * 1024)).toStringAsFixed(1)}MB';
+  }
+
+  // ---- Stage 5: the brief (server-assembled, rendered via GenUI) ----
+  Widget _briefStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
+            const SizedBox(width: 10),
+            Text('Your brief',
+                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        GenUiRead(key: ValueKey(_briefSurface), surface: _briefSurface!),
+        const SizedBox(height: 26),
+        Row(
+          children: [
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.clarify),
+              builder: (h) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                child: Text('Edit answers',
                     style: AppTheme.body(15,
                         color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
                         height: 1.0)),
@@ -421,16 +742,16 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Stage 4: contact ----
+  // ---- Stage 6: contact ----
   Widget _contactStage() {
     return Form(
       key: _formKey,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Where do we send it?', style: AppTheme.heading(26)),
+          Text('Where do we send your brief?', style: AppTheme.heading(26)),
           const SizedBox(height: 10),
-          Text('A human reviews every request. No spam, no autoresponders.',
+          Text('A human reviews every brief. No spam, no autoresponders.',
               style: AppTheme.body(15)),
           const SizedBox(height: 26),
           _field(_name, 'Your name', hint: 'Jane Rivera', validator: _required),
@@ -449,7 +770,7 @@ class _StartScreenState extends State<StartScreen> {
               Hoverable(
                 onTap: _submitting
                     ? null
-                    : () => setState(() => _stage = _Stage.scoped),
+                    : () => setState(() => _stage = _Stage.brief),
                 builder: (h) => Padding(
                   padding:
                       const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
@@ -513,7 +834,7 @@ class _StartScreenState extends State<StartScreen> {
         Text('Got it.', style: AppTheme.heading(30)),
         const SizedBox(height: 12),
         Text(
-          'Your problem is in front of a human now. We will review it and reach '
+          'Your brief is in front of a human now. We will review it and reach '
           'out, usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
           style: AppTheme.body(15.5),
         ),
