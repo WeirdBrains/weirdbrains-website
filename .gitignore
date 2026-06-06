@@ -19,3 +19,10 @@ Thumbs.db
 # Env
 .env
 *.env.local
+.gstack/
+
+# AI agent skills (managed by the `skills` CLI) + its registry clone cache
+.dart_skills/
+.claude/skills/
+.cursor/skills/
+.claude/settings.local.json
