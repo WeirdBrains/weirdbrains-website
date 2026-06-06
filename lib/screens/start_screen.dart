@@ -45,6 +45,10 @@ class _StartScreenState extends State<StartScreen> {
     'Catch defects on our production line',
   ];
 
+  // Apple-style squircle (Flutter 3.44 superellipse) shared by the inputs.
+  static const _fieldShape = RoundedSuperellipseBorder(
+      borderRadius: BorderRadius.all(Radius.circular(14)));
+
   @override
   void initState() {
     super.initState();
@@ -270,12 +274,14 @@ class _StartScreenState extends State<StartScreen> {
 
   Widget _problemInput() {
     return Container(
-      decoration: BoxDecoration(
+      decoration: ShapeDecoration(
         color: AppTheme.background.withValues(alpha: 0.6),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: _listening ? AppTheme.purple : AppTheme.border,
-          width: _listening ? 1.5 : 1,
+        shape: RoundedSuperellipseBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(
+            color: _listening ? AppTheme.purple : AppTheme.border,
+            width: _listening ? 1.5 : 1,
+          ),
         ),
       ),
       child: Column(
@@ -608,21 +614,21 @@ class _StartScreenState extends State<StartScreen> {
             fillColor: AppTheme.background.withValues(alpha: 0.6),
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
+            enabledBorder: const ShapedInputBorder(
               borderSide: BorderSide(color: AppTheme.border),
+              shape: _fieldShape,
             ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AppTheme.purple, width: 1.5),
+            focusedBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: AppTheme.purple, width: 1.5),
+              shape: _fieldShape,
             ),
-            errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFFF8585)),
+            errorBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: Color(0xFFFF8585)),
+              shape: _fieldShape,
             ),
-            focusedErrorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFFF8585)),
+            focusedErrorBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: Color(0xFFFF8585)),
+              shape: _fieldShape,
             ),
           ),
         ),
