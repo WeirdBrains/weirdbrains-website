@@ -4,9 +4,10 @@ import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
 import '../services/voice_service.dart';
 import '../services/voice_support.dart';
-import '../services/scoping_service.dart';
+import '../services/portal_read_service.dart';
 import '../widgets/starfield.dart';
 import '../widgets/ui.dart';
+import '../widgets/genui_read.dart';
 
 /// The portal. Problem-first, voice-enabled, and it shows AI reducing friction
 /// on the way to capturing a lead. State flows:
@@ -34,7 +35,7 @@ class _StartScreenState extends State<StartScreen> {
   String _preVoiceText = '';
 
   _Stage _stage = _Stage.problem;
-  ScopedRead? _read;
+  Map<String, Object?>? _readSurface;
   bool _submitting = false;
   String? _error;
 
@@ -118,10 +119,10 @@ class _StartScreenState extends State<StartScreen> {
       _error = null;
       _stage = _Stage.thinking;
     });
-    final r = await const ScopingService().read(_problem.text.trim());
+    final surface = await const PortalReadService().read(_problem.text.trim());
     if (!mounted) return;
     setState(() {
-      _read = r;
+      _readSurface = surface;
       _stage = _Stage.scoped;
     });
   }
@@ -378,9 +379,8 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Stage 3: the agent's read ----
+  // ---- Stage 3: the agent's read (generated server-side, rendered via GenUI) ----
   Widget _scopedStage() {
-    final r = _read!;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -393,44 +393,9 @@ class _StartScreenState extends State<StartScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        _domainChip(r.domain),
-        const SizedBox(height: 22),
-        Text('How we would approach it', style: AppTheme.heading(22)),
-        const SizedBox(height: 18),
-        for (int i = 0; i < r.approach.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  margin: const EdgeInsets.only(top: 7),
-                  width: 6,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                      gradient: LinearGradient(colors: AppTheme.ctaGradient),
-                      shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                    child: Text(r.approach[i],
-                        style: AppTheme.body(15.5, height: 1.6))),
-              ],
-            ),
-          ),
-        const SizedBox(height: 18),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppTheme.purple.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppTheme.purple.withValues(alpha: 0.2)),
-          ),
-          child: Text(
-            'This is an instant first pass. A human refines it with you before anything gets built.',
-            style: AppTheme.body(13.5, height: 1.5),
-          ),
-        ),
+        // The read is an A2UI tree built by the backend and rendered blindly
+        // through the branded GenUI catalog. Deterministic now, model next.
+        GenUiRead(surface: _readSurface!),
         const SizedBox(height: 26),
         Row(
           children: [
@@ -453,20 +418,6 @@ class _StartScreenState extends State<StartScreen> {
           ],
         ),
       ],
-    );
-  }
-
-  Widget _domainChip(String domain) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppTheme.sky.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: AppTheme.sky.withValues(alpha: 0.3)),
-      ),
-      child: Text(domain,
-          style: AppTheme.body(13.5, color: AppTheme.sky, height: 1.0)
-              .copyWith(fontWeight: FontWeight.w600)),
     );
   }
 
