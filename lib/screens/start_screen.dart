@@ -140,6 +140,15 @@ class _StartScreenState extends State<StartScreen> {
       _submitting = true;
       _error = null;
     });
+    final discovery = <Map<String, Object?>>[
+      for (final q in (_questions ?? const <Map<String, Object?>>[]))
+        if (q['type'] != 'files' &&
+            (_answers[q['id'] as String? ?? ''] ?? '').trim().isNotEmpty)
+          {
+            'q': (q['label'] as String?) ?? (q['id'] as String? ?? ''),
+            'a': (_answers[q['id'] as String? ?? ''] ?? '').trim(),
+          },
+    ];
     final err = await const IntakeService().submit(IntakeRequest(
       company: _company.text.trim().isEmpty
           ? '(not provided)'
@@ -149,6 +158,8 @@ class _StartScreenState extends State<StartScreen> {
       timeline: _answers['timeline'] ?? 'Not specified',
       contactName: _name.text.trim(),
       contactEmail: _email.text.trim(),
+      discovery: discovery,
+      files: _files,
     ));
     if (!mounted) return;
     setState(() {
