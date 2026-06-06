@@ -1,11 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
+import '../services/voice_service.dart';
+import '../services/voice_support.dart';
+import '../services/portal_service.dart';
+import '../widgets/starfield.dart';
+import '../widgets/ui.dart';
+import '../widgets/genui_read.dart';
 
-/// Multi-step consultation intake. Captures enough to qualify a lead, then
-/// hands off to the backend (which scores it and routes to Telegram for
-/// human approval before any follow-up is sent).
+/// The portal. Problem-first, voice-enabled, agentic. The AI reads the problem,
+/// then hones a brief with the user over a back-and-forth (ping-pong), with
+/// voice and file attachments throughout, before handing a real brief to a
+/// human. State flows:
+///   problem -> thinking -> scoped -> conversation -> contact -> done
+enum _Stage { problem, thinking, scoped, conversation, contact, done }
+
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
 
@@ -14,48 +25,118 @@ class StartScreen extends StatefulWidget {
 }
 
 class _StartScreenState extends State<StartScreen> {
-  static const _budgets = ['< \$10k', '\$10k–\$50k', '\$50k–\$150k', '\$150k+', 'Not sure yet'];
-  static const _timelines = ['ASAP', '1–3 months', '3–6 months', 'Exploring'];
-
-  final _formKey = GlobalKey<FormState>();
-  final _company = TextEditingController();
-  final _project = TextEditingController();
+  final _problem = TextEditingController();
+  final _chatInput = TextEditingController();
   final _name = TextEditingController();
   final _email = TextEditingController();
+  final _company = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
 
-  String _budget = _budgets.first;
-  String _timeline = _timelines.first;
+  final _voice = VoiceService();
+  bool _voiceAvailable = false;
+  bool _voiceInited = false;
+  bool _listening = false; // problem-stage mic
+  bool _chatListening = false; // conversation-stage mic
+  String _preVoiceText = '';
 
-  int _step = 0; // 0 project, 1 scope, 2 contact
+  _Stage _stage = _Stage.problem;
+  Map<String, Object?>? _readSurface;
+  final List<Map<String, String>> _chat = []; // [{role: 'user'|'ai', text}]
+  Map<String, Object?>? _artifact; // the living brief, updated each turn
+  bool _sending = false;
+  final List<Map<String, Object?>> _files = [];
+  bool _uploading = false;
   bool _submitting = false;
-  bool _done = false;
   String? _error;
+
+  static const _examples = [
+    'Read dental x-rays and flag pathology',
+    'Score pipe condition from drain-camera video',
+    'Triage support tickets by urgency',
+    'Catch defects on our production line',
+  ];
+
+  // Apple-style squircle (Flutter 3.44 superellipse) shared by the inputs.
+  static const _fieldShape = RoundedSuperellipseBorder(
+      borderRadius: BorderRadius.all(Radius.circular(14)));
+
+  @override
+  void initState() {
+    super.initState();
+    // Gesture-free feature detection. Actual init happens on the mic click.
+    _voiceAvailable = speechRecognitionSupported();
+  }
 
   @override
   void dispose() {
-    _company.dispose();
-    _project.dispose();
+    _voice.stop();
+    _problem.dispose();
+    _chatInput.dispose();
     _name.dispose();
     _email.dispose();
+    _company.dispose();
     super.dispose();
   }
 
-  bool get _step0Valid =>
-      _company.text.trim().isNotEmpty && _project.text.trim().length >= 12;
+  bool get _problemValid => _problem.text.trim().length >= 12;
 
-  void _next() {
-    setState(() => _error = null);
-    if (_step == 0 && !_step0Valid) {
-      setState(() => _error = 'Tell us your company and a sentence or two about the project.');
+  Future<void> _toggleMic() async {
+    if (_listening) {
+      await _voice.stop();
+      if (mounted) setState(() => _listening = false);
       return;
     }
-    setState(() => _step++);
+    // Initialize on first use (the click is the required user gesture on web).
+    if (!_voiceInited) {
+      _voiceInited = true;
+      final ok = await _voice.init();
+      if (!ok) {
+        if (mounted) {
+          setState(() {
+            _voiceAvailable = false;
+            _error = 'Voice is not available in this browser. Try Chrome, or just type.';
+          });
+        }
+        return;
+      }
+    }
+    _preVoiceText = _problem.text.trim();
+    setState(() {
+      _listening = true;
+      _error = null;
+    });
+    await _voice.start(
+      onText: (text) {
+        final combined = _preVoiceText.isEmpty ? text : '$_preVoiceText $text';
+        _problem.text = combined;
+        _problem.selection =
+            TextSelection.collapsed(offset: _problem.text.length);
+        setState(() {});
+      },
+      onDone: () {
+        if (mounted) setState(() => _listening = false);
+      },
+    );
   }
 
-  void _back() => setState(() {
-        _error = null;
-        _step--;
-      });
+  Future<void> _readProblem() async {
+    if (!_problemValid) {
+      setState(() => _error = 'Give us a sentence or two so we can read it.');
+      return;
+    }
+    await _voice.stop();
+    setState(() {
+      _listening = false;
+      _error = null;
+      _stage = _Stage.thinking;
+    });
+    final surface = await const PortalService().read(_problem.text.trim());
+    if (!mounted) return;
+    setState(() {
+      _readSurface = surface;
+      _stage = _Stage.scoped;
+    });
+  }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -63,21 +144,28 @@ class _StartScreenState extends State<StartScreen> {
       _submitting = true;
       _error = null;
     });
-
+    // The whole ping-pong transcript travels to the human as the discovery.
+    final discovery = <Map<String, Object?>>[
+      for (final m in _chat)
+        {'q': m['role'] == 'ai' ? 'AI' : 'You', 'a': m['text'] ?? ''},
+    ];
     final err = await const IntakeService().submit(IntakeRequest(
-      company: _company.text.trim(),
-      projectDescription: _project.text.trim(),
-      budgetRange: _budget,
-      timeline: _timeline,
+      company: _company.text.trim().isEmpty
+          ? '(not provided)'
+          : _company.text.trim(),
+      projectDescription: _problem.text.trim(),
+      budgetRange: 'Not specified',
+      timeline: 'Not specified',
       contactName: _name.text.trim(),
       contactEmail: _email.text.trim(),
+      discovery: discovery,
+      files: _files,
     ));
-
     if (!mounted) return;
     setState(() {
       _submitting = false;
       if (err == null) {
-        _done = true;
+        _stage = _Stage.done;
       } else {
         _error = err;
       }
@@ -88,240 +176,763 @@ class _StartScreenState extends State<StartScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.background,
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 560),
-            child: _done ? _buildDone(context) : _buildForm(context),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildForm(BuildContext context) {
-    return Form(
-      key: _formKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      body: Stack(
         children: [
-          _BackToHome(),
-          const SizedBox(height: 32),
-          Text(
-            'Start a project',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: AppTheme.textPrimary,
-                  fontWeight: FontWeight.bold,
-                ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Opacity(opacity: 0.4, child: const Starfield()),
+            ),
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Tell us what you do and where AI could help. We read every one.',
-            style: TextStyle(color: AppTheme.textSecondary, height: 1.5),
+          Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 56),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 620),
+                child: _card(),
+              ),
+            ),
           ),
-          const SizedBox(height: 32),
-          _StepDots(current: _step, total: 3),
-          const SizedBox(height: 32),
-          ..._buildStep(context),
-          if (_error != null) ...[
-            const SizedBox(height: 16),
-            Text(_error!, style: const TextStyle(color: Color(0xFFFF7A7A), height: 1.4)),
-          ],
-          const SizedBox(height: 32),
-          _buildNav(context),
         ],
       ),
     );
   }
 
-  List<Widget> _buildStep(BuildContext context) {
-    switch (_step) {
-      case 0:
-        return [
-          _field(_company, 'Company', hint: 'Acme Grading Co.'),
-          const SizedBox(height: 20),
-          _field(
-            _project,
-            'What are you building?',
-            hint: 'We run sliplining inspections and want AI to classify pipe condition from video.',
-            maxLines: 4,
-          ),
-        ];
-      case 1:
-        return [
-          const _Label('Budget range'),
-          const SizedBox(height: 12),
-          _chips(_budgets, _budget, (v) => setState(() => _budget = v)),
-          const SizedBox(height: 28),
-          const _Label('Timeline'),
-          const SizedBox(height: 12),
-          _chips(_timelines, _timeline, (v) => setState(() => _timeline = v)),
-        ];
-      default:
-        return [
-          _field(_name, 'Your name', hint: 'Jane Doe', validator: _required),
-          const SizedBox(height: 20),
-          _field(_email, 'Email', hint: 'jane@acme.com', validator: _email_),
-          const SizedBox(height: 24),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppTheme.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white10),
-            ),
-            child: const Text(
-              'A human reviews every request before we reach out. No spam, no autoresponders.',
-              style: TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.5),
-            ),
-          ),
-        ];
-    }
+  Widget _card() {
+    return Container(
+      padding: const EdgeInsets.all(36),
+      decoration: BoxDecoration(
+        color: AppTheme.surface.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppTheme.border),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 60,
+              spreadRadius: -20),
+        ],
+      ),
+      child: switch (_stage) {
+        _Stage.problem => _problemStage(),
+        _Stage.thinking => _loadingStage('Reading your problem...'),
+        _Stage.scoped => _scopedStage(),
+        _Stage.conversation => _conversationStage(),
+        _Stage.contact => _contactStage(),
+        _Stage.done => _doneStage(),
+      },
+    );
   }
 
-  Widget _buildNav(BuildContext context) {
-    final isLast = _step == 2;
-    return Row(
+  // ---- Stage 1: the problem (voice-first) ----
+  Widget _problemStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (_step > 0)
-          TextButton(
-            onPressed: _submitting ? null : _back,
-            child: const Text('Back', style: TextStyle(color: AppTheme.textSecondary)),
-          ),
-        const Spacer(),
-        FilledButton(
-          onPressed: _submitting ? null : (isLast ? _submit : _next),
-          style: FilledButton.styleFrom(
-            backgroundColor: AppTheme.accent,
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 18),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          child: _submitting
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
-              : Text(isLast ? 'Send request' : 'Continue',
-                  style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
+        _backToHome(),
+        const SizedBox(height: 26),
+        Text('What do you want AI to solve?', style: AppTheme.heading(28)),
+        const SizedBox(height: 10),
+        Text(
+          _voiceAvailable
+              ? 'Describe the problem in your own words. Type it, or just talk.'
+              : 'Describe the problem in your own words.',
+          style: AppTheme.body(15),
+        ),
+        const SizedBox(height: 24),
+        _problemInput(),
+        if (_error != null) ...[
+          const SizedBox(height: 14),
+          Text(_error!,
+              style: AppTheme.body(14, color: const Color(0xFFFF8585))),
+        ],
+        const SizedBox(height: 20),
+        Text('TRY ONE', style: AppTheme.eyebrow().copyWith(fontSize: 10, color: AppTheme.textMuted)),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final ex in _examples)
+              Hoverable(
+                onTap: () {
+                  _problem.text = ex;
+                  setState(() => _error = null);
+                },
+                builder: (h) => Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: h
+                        ? AppTheme.purple.withValues(alpha: 0.12)
+                        : Colors.white.withValues(alpha: 0.03),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                        color: h
+                            ? AppTheme.purple.withValues(alpha: 0.4)
+                            : AppTheme.border),
+                  ),
+                  child: Text(ex,
+                      style: AppTheme.body(13,
+                          color: AppTheme.textSecondary, height: 1.0)),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 28),
+        Row(
+          children: [
+            const Spacer(),
+            PrimaryButton(
+              label: 'Continue',
+              icon: Icons.arrow_forward_rounded,
+              onTap: _readProblem,
+            ),
+          ],
         ),
       ],
     );
   }
 
-  Widget _buildDone(BuildContext context) {
+  Widget _problemInput() {
+    return Container(
+      decoration: ShapeDecoration(
+        color: AppTheme.background.withValues(alpha: 0.6),
+        shape: RoundedSuperellipseBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(
+            color: _listening ? AppTheme.purple : AppTheme.border,
+            width: _listening ? 1.5 : 1,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          TextField(
+            controller: _problem,
+            maxLines: 4,
+            minLines: 4,
+            style: AppTheme.body(16, color: AppTheme.textPrimary, height: 1.5),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            decoration: InputDecoration(
+              hintText:
+                  'e.g. We run sliplining inspections and want AI to score pipe condition from our drain-camera video.',
+              hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Row(
+              children: [
+                if (_voiceAvailable) _micButton(),
+                const Spacer(),
+                if (_listening)
+                  Text('Listening...',
+                      style: AppTheme.body(13, color: AppTheme.purpleBright)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _micButton() {
+    return Hoverable(
+      onTap: _toggleMic,
+      builder: (h) => AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: _listening
+              ? AppTheme.purple.withValues(alpha: 0.2)
+              : (h ? Colors.white.withValues(alpha: 0.06) : Colors.transparent),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+              color: _listening ? AppTheme.purple : AppTheme.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _listening
+                ? const PulseDot(color: AppTheme.purpleBright, size: 8)
+                : const Icon(Icons.mic_none_rounded,
+                    size: 18, color: AppTheme.textSecondary),
+            const SizedBox(width: 7),
+            Text(_listening ? 'Stop' : 'Speak',
+                style: AppTheme.body(13.5,
+                    color: _listening
+                        ? AppTheme.purpleBright
+                        : AppTheme.textSecondary,
+                    height: 1.0)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---- Loading ----
+  Widget _loadingStage(String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 28),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: AppTheme.purpleBright),
+          ),
+          const SizedBox(width: 14),
+          Flexible(
+            child: Text(label,
+                style: AppTheme.heading(18, color: AppTheme.textSecondary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---- Stage 3: the agent's read (generated server-side, rendered via GenUI) ----
+  Widget _scopedStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
+            const SizedBox(width: 10),
+            Text('First-pass read',
+                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        GenUiRead(key: ValueKey(_readSurface), surface: _readSurface!),
+        const SizedBox(height: 26),
+        Row(
+          children: [
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.problem),
+              builder: (h) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                child: Text('Edit',
+                    style: AppTheme.body(15,
+                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                        height: 1.0)),
+              ),
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Hone it with AI',
+              icon: Icons.arrow_forward_rounded,
+              onTap: _startConversation,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ---- Stage 4: ping-pong refinement (artifact + chat) ----
+  void _startConversation() {
+    setState(() {
+      _artifact = _readSurface;
+      _chat
+        ..clear()
+        ..add({
+          'role': 'ai',
+          'text':
+              "Here's my first read. Tell me where it's off, add detail, or "
+                  "attach an example. When it looks right, send it to a human.",
+        });
+      _error = null;
+      _stage = _Stage.conversation;
+    });
+  }
+
+  Future<void> _sendRefine() async {
+    final msg = _chatInput.text.trim();
+    if (msg.isEmpty || _sending) return;
+    await _voice.stop();
+    final history = [
+      for (final m in _chat) {'role': m['role'], 'text': m['text']},
+    ];
+    setState(() {
+      _chat.add({'role': 'user', 'text': msg});
+      _chatInput.clear();
+      _chatListening = false;
+      _sending = true;
+      _error = null;
+    });
+    final res = await const PortalService()
+        .refine(_problem.text.trim(), history, msg, _files);
+    if (!mounted) return;
+    setState(() {
+      _chat.add({'role': 'ai', 'text': res['reply']?.toString() ?? 'Updated.'});
+      final b = res['brief'];
+      if (b is Map) _artifact = b.cast<String, Object?>();
+      _sending = false;
+    });
+  }
+
+  Future<void> _toggleChatMic() async {
+    if (_chatListening) {
+      await _voice.stop();
+      if (mounted) setState(() => _chatListening = false);
+      return;
+    }
+    if (!_voiceInited) {
+      _voiceInited = true;
+      final ok = await _voice.init();
+      if (!ok) {
+        if (mounted) setState(() => _voiceAvailable = false);
+        return;
+      }
+    }
+    final pre = _chatInput.text.trim();
+    setState(() => _chatListening = true);
+    await _voice.start(
+      onText: (t) {
+        _chatInput.text = pre.isEmpty ? t : '$pre $t';
+        _chatInput.selection =
+            TextSelection.collapsed(offset: _chatInput.text.length);
+        setState(() {});
+      },
+      onDone: () {
+        if (mounted) setState(() => _chatListening = false);
+      },
+    );
+  }
+
+  Future<void> _pickFiles() async {
+    final result = await FilePicker.platform
+        .pickFiles(allowMultiple: true, withData: true);
+    if (result == null) return;
+    setState(() => _uploading = true);
+    for (final f in result.files) {
+      final bytes = f.bytes;
+      if (bytes == null) continue;
+      final meta = await const PortalService().upload(f.name, bytes);
+      if (!mounted) return;
+      setState(() => _files.add(meta));
+    }
+    if (mounted) setState(() => _uploading = false);
+  }
+
+  String _fmtSize(Object? size) {
+    final n = (size is num) ? size.toInt() : 0;
+    if (n < 1024) return '${n}B';
+    if (n < 1024 * 1024) return '${(n / 1024).toStringAsFixed(0)}KB';
+    return '${(n / (1024 * 1024)).toStringAsFixed(1)}MB';
+  }
+
+  Widget _conversationStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
+            const SizedBox(width: 10),
+            Text('Honing your brief',
+                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+            const Spacer(),
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.scoped),
+              builder: (h) => Text('Restart',
+                  style: AppTheme.body(13,
+                      color: h ? AppTheme.textPrimary : AppTheme.textMuted,
+                      height: 1.0)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        // The living artifact: the brief, updated every turn.
+        if (_artifact != null)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: ShapeDecoration(
+              color: AppTheme.background.withValues(alpha: 0.4),
+              shape: RoundedSuperellipseBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: AppTheme.border),
+              ),
+            ),
+            child: GenUiRead(key: ValueKey(_artifact), surface: _artifact!),
+          ),
+        const SizedBox(height: 22),
+        // The dialogue.
+        for (final m in _chat) ...[
+          _chatBubble(m['role'] ?? 'ai', m['text'] ?? ''),
+          const SizedBox(height: 12),
+        ],
+        if (_sending) ...[
+          _chatBubble('ai', 'Thinking...'),
+          const SizedBox(height: 12),
+        ],
+        if (_files.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          for (final file in _files) _fileChip(file),
+        ],
+        const SizedBox(height: 8),
+        _chatInputBar(),
+        if (_error != null) ...[
+          const SizedBox(height: 12),
+          Text(_error!,
+              style: AppTheme.body(14, color: const Color(0xFFFF8585))),
+        ],
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            const Spacer(),
+            PrimaryButton(
+              label: 'Send to a human',
+              icon: Icons.arrow_forward_rounded,
+              onTap: () => setState(() => _stage = _Stage.contact),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _chatBubble(String role, String text) {
+    final isAi = role == 'ai';
+    return Align(
+      alignment: isAi ? Alignment.centerLeft : Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: ShapeDecoration(
+            color: isAi
+                ? Colors.white.withValues(alpha: 0.04)
+                : AppTheme.purple.withValues(alpha: 0.16),
+            shape: RoundedSuperellipseBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                  color: isAi
+                      ? AppTheme.border
+                      : AppTheme.purple.withValues(alpha: 0.4)),
+            ),
+          ),
+          child: Text(text,
+              style: AppTheme.body(14.5,
+                  color: isAi ? AppTheme.textSecondary : AppTheme.textPrimary,
+                  height: 1.45)),
+        ),
+      ),
+    );
+  }
+
+  Widget _fileChip(Map<String, Object?> file) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          const Icon(Icons.description_outlined, size: 16, color: AppTheme.sky),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(file['name']?.toString() ?? 'file',
+                style: AppTheme.body(13.5,
+                    color: AppTheme.textSecondary, height: 1.2),
+                overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 8),
+          Text(_fmtSize(file['size']),
+              style: AppTheme.body(12, color: AppTheme.textMuted, height: 1.0)),
+          const SizedBox(width: 10),
+          Hoverable(
+            onTap: () => setState(() => _files.remove(file)),
+            builder: (h) => Icon(Icons.close_rounded,
+                size: 16,
+                color: h ? const Color(0xFFFF8585) : AppTheme.textMuted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chatInputBar() {
+    return Container(
+      decoration: ShapeDecoration(
+        color: AppTheme.background.withValues(alpha: 0.6),
+        shape: RoundedSuperellipseBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: _chatListening ? AppTheme.purple : AppTheme.border,
+            width: _chatListening ? 1.5 : 1,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          TextField(
+            controller: _chatInput,
+            minLines: 1,
+            maxLines: 4,
+            style: AppTheme.body(15, color: AppTheme.textPrimary, height: 1.45),
+            onSubmitted: (_) => _sendRefine(),
+            decoration: InputDecoration(
+              hintText: 'Add detail, correct us, or ask a question...',
+              hintStyle: AppTheme.body(14.5, color: AppTheme.textMuted),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            child: Row(
+              children: [
+                _iconChip(
+                    _uploading
+                        ? Icons.hourglass_top_rounded
+                        : Icons.attach_file_rounded,
+                    _uploading ? 'Uploading' : 'Attach',
+                    _uploading ? null : _pickFiles),
+                const SizedBox(width: 8),
+                if (_voiceAvailable)
+                  _iconChip(
+                      _chatListening
+                          ? Icons.stop_rounded
+                          : Icons.mic_none_rounded,
+                      _chatListening ? 'Stop' : 'Speak',
+                      _toggleChatMic,
+                      active: _chatListening),
+                const Spacer(),
+                _sendButton(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _iconChip(IconData icon, String label, VoidCallback? onTap,
+      {bool active = false}) {
+    return Hoverable(
+      onTap: onTap,
+      builder: (h) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: active
+              ? AppTheme.purple.withValues(alpha: 0.2)
+              : (h ? Colors.white.withValues(alpha: 0.06) : Colors.transparent),
+          borderRadius: BorderRadius.circular(999),
+          border:
+              Border.all(color: active ? AppTheme.purple : AppTheme.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon,
+                size: 16,
+                color: active ? AppTheme.purpleBright : AppTheme.textSecondary),
+            const SizedBox(width: 6),
+            Text(label,
+                style: AppTheme.body(13,
+                    color:
+                        active ? AppTheme.purpleBright : AppTheme.textSecondary,
+                    height: 1.0)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sendButton() {
+    return Hoverable(
+      onTap: _sending ? null : _sendRefine,
+      builder: (h) => Opacity(
+        opacity: _sending ? 0.6 : 1,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Send',
+                  style: AppTheme.body(13.5, color: Colors.white, height: 1.0)
+                      .copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(width: 6),
+              const Icon(Icons.arrow_upward_rounded,
+                  size: 15, color: Colors.white),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- Stage 5: contact ----
+  Widget _contactStage() {
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Where do we send your brief?', style: AppTheme.heading(26)),
+          const SizedBox(height: 10),
+          Text('A human reviews every brief. No spam, no autoresponders.',
+              style: AppTheme.body(15)),
+          const SizedBox(height: 26),
+          _field(_name, 'Your name', hint: 'Jane Rivera', validator: _required),
+          const SizedBox(height: 18),
+          _field(_email, 'Email', hint: 'jane@acme.com', validator: _email_),
+          const SizedBox(height: 18),
+          _field(_company, 'Company (optional)', hint: 'Acme Grading Co.'),
+          if (_error != null) ...[
+            const SizedBox(height: 14),
+            Text(_error!,
+                style: AppTheme.body(14, color: const Color(0xFFFF8585))),
+          ],
+          const SizedBox(height: 26),
+          Row(
+            children: [
+              Hoverable(
+                onTap: _submitting
+                    ? null
+                    : () => setState(() => _stage = _Stage.conversation),
+                builder: (h) => Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                  child: Text('Back',
+                      style: AppTheme.body(15,
+                          color:
+                              h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                          height: 1.0)),
+                ),
+              ),
+              const Spacer(),
+              if (_submitting)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 36, vertical: 16),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(999),
+                    gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+                  ),
+                  child: const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.white),
+                  ),
+                )
+              else
+                PrimaryButton(
+                  label: 'Send request',
+                  icon: Icons.send_rounded,
+                  onTap: _submit,
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---- Stage 6: done ----
+  Widget _doneStage() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          width: 56,
-          height: 56,
+          width: 60,
+          height: 60,
           decoration: BoxDecoration(
-            color: AppTheme.accent.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(16),
+            gradient: const LinearGradient(colors: AppTheme.ctaGradient),
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                  color: AppTheme.purple.withValues(alpha: 0.4),
+                  blurRadius: 24,
+                  spreadRadius: -6)
+            ],
           ),
-          child: const Icon(Icons.check_rounded, color: AppTheme.accent, size: 30),
+          child: const Icon(Icons.check_rounded, color: Colors.white, size: 32),
         ),
         const SizedBox(height: 28),
-        Text(
-          'Got it.',
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                color: AppTheme.textPrimary,
-                fontWeight: FontWeight.bold,
-              ),
-        ),
+        Text('Got it.', style: AppTheme.heading(30)),
         const SizedBox(height: 12),
         Text(
-          'Your request is in. A human at Weird Brains will review it and reach out, '
-          'usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
-          style: const TextStyle(color: AppTheme.textSecondary, height: 1.6),
+          'Your brief is in front of a human now. We will review it and reach '
+          'out, usually within a day or two. If it is urgent, email hello@weirdbrains.com.',
+          style: AppTheme.body(15.5),
         ),
-        const SizedBox(height: 32),
-        TextButton(
-          onPressed: () => context.go('/'),
-          child: const Text('← Back to home', style: TextStyle(color: AppTheme.accent)),
+        const SizedBox(height: 30),
+        Hoverable(
+          onTap: () => context.go('/'),
+          builder: (h) => Text('← Back to home',
+              style: AppTheme.body(15,
+                  color: h ? AppTheme.purpleBright : AppTheme.purple,
+                  height: 1.0)),
         ),
       ],
     );
   }
 
-  // ---- small helpers ----
+  // ---- helpers ----
+  Widget _backToHome() {
+    return Hoverable(
+      onTap: () => context.go('/'),
+      builder: (h) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('🧠', style: TextStyle(fontSize: 16)),
+          const SizedBox(width: 8),
+          Text('Weird Brains',
+              style: AppTheme.body(14,
+                  color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                  height: 1.0)),
+        ],
+      ),
+    );
+  }
 
-  Widget _field(
-    TextEditingController c,
-    String label, {
-    String? hint,
-    int maxLines = 1,
-    String? Function(String?)? validator,
-  }) {
+  Widget _field(TextEditingController c, String label,
+      {String? hint, String? Function(String?)? validator}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _Label(label),
+        Text(label, style: AppTheme.heading(15.5)),
         const SizedBox(height: 10),
         TextFormField(
           controller: c,
-          maxLines: maxLines,
           validator: validator,
-          style: const TextStyle(color: AppTheme.textPrimary),
-          onChanged: (_) {
-            if (_error != null) setState(() => _error = null);
-          },
+          style: AppTheme.body(15.5, color: AppTheme.textPrimary, height: 1.4),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: const TextStyle(color: Color(0xFF5A5A5A)),
+            hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
             filled: true,
-            fillColor: AppTheme.surface,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Colors.white10),
+            fillColor: AppTheme.background.withValues(alpha: 0.6),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+            enabledBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: AppTheme.border),
+              shape: _fieldShape,
             ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: AppTheme.accent),
+            focusedBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: AppTheme.purple, width: 1.5),
+              shape: _fieldShape,
             ),
-            errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFFF7A7A)),
+            errorBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: Color(0xFFFF8585)),
+              shape: _fieldShape,
             ),
-            focusedErrorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFFFF7A7A)),
+            focusedErrorBorder: const ShapedInputBorder(
+              borderSide: BorderSide(color: Color(0xFFFF8585)),
+              shape: _fieldShape,
             ),
           ),
         ),
       ],
-    );
-  }
-
-  Widget _chips(List<String> options, String selected, ValueChanged<String> onPick) {
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: options.map((o) {
-        final isSel = o == selected;
-        return GestureDetector(
-          onTap: () => onPick(o),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            decoration: BoxDecoration(
-              color: isSel ? AppTheme.accent.withOpacity(0.15) : AppTheme.surface,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: isSel ? AppTheme.accent : Colors.white10),
-            ),
-            child: Text(
-              o,
-              style: TextStyle(
-                color: isSel ? AppTheme.accent : AppTheme.textSecondary,
-                fontWeight: isSel ? FontWeight.w600 : FontWeight.normal,
-              ),
-            ),
-          ),
-        );
-      }).toList(),
     );
   }
 
@@ -332,56 +943,5 @@ class _StartScreenState extends State<StartScreen> {
     if (v == null || v.trim().isEmpty) return 'Required';
     final ok = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v.trim());
     return ok ? null : 'Enter a valid email';
-  }
-}
-
-class _Label extends StatelessWidget {
-  final String text;
-  const _Label(this.text);
-
-  @override
-  Widget build(BuildContext context) => Text(
-        text,
-        style: const TextStyle(
-          color: AppTheme.textPrimary,
-          fontWeight: FontWeight.w600,
-          fontSize: 15,
-        ),
-      );
-}
-
-class _StepDots extends StatelessWidget {
-  final int current;
-  final int total;
-  const _StepDots({required this.current, required this.total});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: List.generate(total, (i) {
-        final active = i <= current;
-        return Expanded(
-          child: Container(
-            margin: EdgeInsets.only(right: i == total - 1 ? 0 : 8),
-            height: 4,
-            decoration: BoxDecoration(
-              color: active ? AppTheme.accent : Colors.white12,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-        );
-      }),
-    );
-  }
-}
-
-class _BackToHome extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return TextButton(
-      onPressed: () => context.go('/'),
-      style: TextButton.styleFrom(padding: EdgeInsets.zero),
-      child: const Text('← Weird Brains', style: TextStyle(color: AppTheme.textSecondary)),
-    );
   }
 }

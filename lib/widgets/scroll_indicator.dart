@@ -39,24 +39,24 @@ class _ScrollIndicatorState extends State<ScrollIndicator>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              'scroll',
-              style: TextStyle(
-                color: AppTheme.textSecondary,
-                fontSize: 11,
-                letterSpacing: 2,
+            Text(
+              'SCROLL',
+              style: AppTheme.eyebrow().copyWith(
+                color: AppTheme.textMuted,
+                fontSize: 10,
+                letterSpacing: 3,
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Transform.rotate(
               angle: math.pi / 4,
               child: Container(
-                width: 10,
-                height: 10,
+                width: 9,
+                height: 9,
                 decoration: BoxDecoration(
                   border: Border(
-                    right: BorderSide(color: AppTheme.textSecondary.withOpacity(0.6), width: 1.5),
-                    bottom: BorderSide(color: AppTheme.textSecondary.withOpacity(0.6), width: 1.5),
+                    right: BorderSide(color: AppTheme.textMuted.withValues(alpha: 0.7), width: 1.5),
+                    bottom: BorderSide(color: AppTheme.textMuted.withValues(alpha: 0.7), width: 1.5),
                   ),
                 ),
               ),

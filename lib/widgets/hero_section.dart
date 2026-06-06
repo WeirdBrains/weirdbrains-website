@@ -2,97 +2,141 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import 'scroll_indicator.dart';
+import 'starfield.dart';
+import 'ui.dart';
+
+/// QA-only override: set to a fixed pixel height so the full page can be
+/// captured in one screenshot (the headless renderer can't scroll Flutter).
+/// MUST be null in production so the hero fills the viewport.
+const double? _qaHeight = null;
 
 class HeroSection extends StatelessWidget {
-  const HeroSection({super.key});
+  final VoidCallback onSeeWork;
+  const HeroSection({super.key, required this.onSeeWork});
 
   @override
   Widget build(BuildContext context) {
-    final isNarrow = MediaQuery.of(context).size.width < 720;
+    final narrow = isNarrow(context);
+    final h = MediaQuery.of(context).size.height;
+    // Explicit height (not minHeight): the hero lives inside a scroll view, so
+    // an unbounded height would collapse the bottom-aligned scroll indicator.
+    final heroH = _qaHeight ?? (h < 700 ? 700.0 : h);
     return Container(
-      constraints: BoxConstraints(minHeight: MediaQuery.of(context).size.height),
-      alignment: Alignment.center,
-      padding: EdgeInsets.symmetric(horizontal: isNarrow ? 24 : 48, vertical: 64),
-      decoration: const BoxDecoration(color: AppTheme.background),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 880),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              'WEIRD BRAINS',
-              style: TextStyle(
-                color: AppTheme.accent,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 4,
-                fontSize: isNarrow ? 13 : 14,
-              ),
-            ),
-            const SizedBox(height: 28),
-            Text(
-              'The AI layer for companies\nthat know their domain cold.',
-              style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                    color: AppTheme.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: -1,
-                    height: 1.1,
-                    fontSize: isNarrow ? 34 : 52,
-                  ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'You bring the expertise. We build the AI that makes it 10x, '
-              'from dental imaging to pipe inspection. Partner with us, or start '
-              'a self-serve MVP and grow from there.',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: AppTheme.textSecondary,
-                    height: 1.6,
-                    fontSize: isNarrow ? 16 : 18,
-                  ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 40),
-            Wrap(
-              spacing: 16,
-              runSpacing: 16,
-              alignment: WrapAlignment.center,
-              children: [
-                FilledButton(
-                  onPressed: () => context.go('/start'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppTheme.accent,
-                    padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 20),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: const Text(
-                    'Start a project',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w600, color: Colors.white, fontSize: 16),
-                  ),
-                ),
-                OutlinedButton(
-                  onPressed: () => Scrollable.ensureVisible(
-                    context,
-                    duration: const Duration(milliseconds: 1),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.white24),
-                    padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 20),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  child: const Text(
-                    'See our work',
-                    style: TextStyle(color: AppTheme.textPrimary, fontSize: 16),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 56),
-            const ScrollIndicator(),
-          ],
+      height: heroH,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          // Clean brand navy across the top, deepening only near the bottom.
+          colors: [AppTheme.background, AppTheme.background, AppTheme.deepSpace],
+          stops: [0.0, 0.62, 1.0],
         ),
       ),
+      child: Stack(
+        children: [
+          const Positioned.fill(child: Starfield()),
+          Center(
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                  narrow ? 24 : 48, 120, narrow ? 24 : 48, 80),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 900),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Reveal(
+                      delayMs: 0,
+                      child: Chip2('AI VENTURE STUDIO', dot: AppTheme.gold),
+                    ),
+                    SizedBox(height: narrow ? 24 : 30),
+                    Reveal(
+                      delayMs: 90,
+                      child: GradientText(
+                        'The AI layer for companies\nthat know their domain cold.',
+                        style: AppTheme.display(narrow ? 36 : 60),
+                      ),
+                    ),
+                    SizedBox(height: narrow ? 20 : 26),
+                    Reveal(
+                      delayMs: 180,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 640),
+                        child: Text(
+                          'You know your domain cold. We build the AI that makes it 10x. '
+                          'Agents do the work, you hold the gate, from dental imaging to '
+                          'pipe inspection.',
+                          textAlign: TextAlign.center,
+                          style: AppTheme.body(narrow ? 16 : 18.5),
+                        ),
+                      ),
+                    ),
+                    SizedBox(height: narrow ? 32 : 40),
+                    Reveal(
+                      delayMs: 270,
+                      child: Wrap(
+                        spacing: 16,
+                        runSpacing: 14,
+                        alignment: WrapAlignment.center,
+                        children: [
+                          PrimaryButton(
+                            label: 'Start a project',
+                            icon: Icons.arrow_forward_rounded,
+                            onTap: () => context.go('/start'),
+                          ),
+                          GhostButton(
+                            label: 'See our work',
+                            icon: Icons.grid_view_rounded,
+                            onTap: onSeeWork,
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: narrow ? 40 : 52),
+                    Reveal(delayMs: 360, child: _trustRow(narrow)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: EdgeInsets.only(bottom: 28),
+              child: ScrollIndicator(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _trustRow(bool narrow) {
+    return Column(
+      children: [
+        Text('CURRENTLY BUILDING',
+            style: AppTheme.eyebrow()
+                .copyWith(color: AppTheme.textMuted, fontSize: 11, letterSpacing: 3)),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          alignment: WrapAlignment.center,
+          children: [
+            for (final n in ['Mandible', 'WickHackers', 'Myelin / GYRI'])
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.03),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                ),
+                child: Text(n,
+                    style: AppTheme.heading(narrow ? 14 : 15.5,
+                        color: AppTheme.textSecondary)),
+              ),
+          ],
+        ),
+      ],
     );
   }
 }

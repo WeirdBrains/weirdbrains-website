@@ -11,14 +11,22 @@ import 'package:http/http.dart' as http;
 class IntakeService {
   static const String _endpoint =
       String.fromEnvironment('INTAKE_ENDPOINT', defaultValue: '');
+  static const String _base =
+      String.fromEnvironment('PORTAL_API_BASE', defaultValue: '');
 
   const IntakeService();
 
-  bool get hasBackend => _endpoint.isNotEmpty;
+  /// Prefer an explicit INTAKE_ENDPOINT; otherwise derive from PORTAL_API_BASE.
+  String? get _url => _endpoint.isNotEmpty
+      ? _endpoint
+      : (_base.isNotEmpty ? '$_base/intake' : null);
+
+  bool get hasBackend => _url != null;
 
   /// Returns null on success, or a human-readable error string on failure.
   Future<String?> submit(IntakeRequest request) async {
-    if (!hasBackend) {
+    final url = _url;
+    if (url == null) {
       // No backend wired yet — simulate the round-trip so the UI is testable.
       await Future<void>.delayed(const Duration(milliseconds: 600));
       return null;
@@ -27,7 +35,7 @@ class IntakeService {
     try {
       final response = await http
           .post(
-            Uri.parse(_endpoint),
+            Uri.parse(url),
             headers: const {'Content-Type': 'application/json'},
             body: jsonEncode(request.toJson()),
           )
@@ -50,6 +58,8 @@ class IntakeRequest {
   final String timeline;
   final String contactName;
   final String contactEmail;
+  final List<Map<String, Object?>> discovery;
+  final List<Map<String, Object?>> files;
 
   const IntakeRequest({
     required this.company,
@@ -58,6 +68,8 @@ class IntakeRequest {
     required this.timeline,
     required this.contactName,
     required this.contactEmail,
+    this.discovery = const [],
+    this.files = const [],
   });
 
   Map<String, dynamic> toJson() => {
@@ -67,6 +79,8 @@ class IntakeRequest {
         'timeline': timeline,
         'contact_name': contactName,
         'contact_email': contactEmail,
+        'discovery': discovery,
+        'files': files,
         'source': 'web_form',
       };
 }
