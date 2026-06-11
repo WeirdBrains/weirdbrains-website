@@ -15,7 +15,13 @@ void main() {
 final _router = GoRouter(
   routes: [
     GoRoute(path: '/', builder: (ctx, state) => const HomeScreen()),
-    GoRoute(path: '/start', builder: (ctx, state) => const StartScreen()),
+    GoRoute(
+      path: '/start',
+      builder: (ctx, state) => StartScreen(
+        unlockPlanId: state.uri.queryParameters['unlock'],
+        checkoutSession: state.uri.queryParameters['cs'],
+      ),
+    ),
   ],
 );
 

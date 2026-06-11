@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
 import '../services/voice_service.dart';
@@ -22,7 +23,11 @@ import '../widgets/genui_read.dart';
 enum _Stage { problem, thinking, scoped, conversation, planning, plan, contact, done }
 
 class StartScreen extends StatefulWidget {
-  const StartScreen({super.key});
+  const StartScreen({super.key, this.unlockPlanId, this.checkoutSession});
+
+  /// Set when Stripe redirects back after payment: /start?unlock=...&cs=...
+  final String? unlockPlanId;
+  final String? checkoutSession;
 
   @override
   State<StartScreen> createState() => _StartScreenState();
@@ -50,6 +55,11 @@ class _StartScreenState extends State<StartScreen> {
   Map<String, Object?>? _planSurface; // the hardened plan artifact
   String _planMarkdown = '';
   bool _planNeedsReview = false;
+  String? _planId;
+  bool _planLocked = false;
+  Map<String, Object?> _prices = const {};
+  bool _checkingOut = false;
+  bool _unlocking = false;
   Timer? _planTimer;
   int _planTick = 0;
   bool _copied = false;
@@ -75,6 +85,34 @@ class _StartScreenState extends State<StartScreen> {
     super.initState();
     // Gesture-free feature detection. Actual init happens on the mic click.
     _voiceAvailable = speechRecognitionSupported();
+    // Returning from Stripe: verify payment and open the full plan.
+    final unlockId = widget.unlockPlanId;
+    if (unlockId != null && unlockId.isNotEmpty) {
+      _unlocking = true;
+      _stage = _Stage.planning;
+      _unlockPlan(unlockId, widget.checkoutSession ?? '');
+    }
+  }
+
+  Future<void> _unlockPlan(String planId, String cs) async {
+    final res = await const PortalService().unlock(planId, cs);
+    if (!mounted) return;
+    setState(() {
+      _unlocking = false;
+      if (res == null || res['surface'] is! Map) {
+        _stage = _Stage.problem;
+        _error =
+            'We could not confirm the payment yet. Give it a minute and reopen '
+            'the link from your receipt, or email hello@weirdbrains.com.';
+        return;
+      }
+      _planId = planId;
+      _planLocked = false;
+      _planSurface = (res['surface'] as Map).cast<String, Object?>();
+      _planMarkdown = res['markdown']?.toString() ?? '';
+      _planNeedsReview = res['needsReview'] == true;
+      _stage = _Stage.plan;
+    });
   }
 
   @override
@@ -535,12 +573,43 @@ class _StartScreenState extends State<StartScreen> {
       _planSurface = s is Map ? s.cast<String, Object?>() : null;
       _planMarkdown = res['markdown']?.toString() ?? '';
       _planNeedsReview = res['needsReview'] == true;
+      _planId = res['planId']?.toString();
+      _planLocked = res['locked'] == true;
+      final p = res['prices'];
+      _prices = p is Map ? p.cast<String, Object?>() : const {};
       _stage = _planSurface == null ? _Stage.conversation : _Stage.plan;
       if (_planSurface == null) {
         _error =
             'Plan generation is busy right now. Give it a minute and try again.';
       }
     });
+  }
+
+  Future<void> _startCheckout(String tier) async {
+    final planId = _planId;
+    if (planId == null || _checkingOut) return;
+    setState(() {
+      _checkingOut = true;
+      _error = null;
+    });
+    final url = await const PortalService().checkout(planId, tier);
+    if (!mounted) return;
+    if (url == null) {
+      setState(() {
+        _checkingOut = false;
+        _error = 'Could not start checkout. Try again in a moment.';
+      });
+      return;
+    }
+    // Same-tab redirect to Stripe; we come back via /start?unlock=...
+    await launchUrl(Uri.parse(url), webOnlyWindowName: '_self');
+    if (mounted) setState(() => _checkingOut = false);
+  }
+
+  String _price(String tier) {
+    final cents = _prices[tier];
+    final n = cents is num ? cents.toInt() : (tier == 'reviewed' ? 19900 : 7900);
+    return '\$${(n / 100).round()}';
   }
 
   Widget _planningStage() {
@@ -559,7 +628,8 @@ class _StartScreenState extends State<StartScreen> {
               ),
               const SizedBox(width: 14),
               Flexible(
-                child: Text('Building your plan',
+                child: Text(
+                    _unlocking ? 'Opening your plan' : 'Building your plan',
                     style: AppTheme.heading(18, color: AppTheme.textSecondary)),
               ),
             ],
@@ -568,8 +638,10 @@ class _StartScreenState extends State<StartScreen> {
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
             child: Text(
-              _planSteps[_planTick],
-              key: ValueKey(_planTick),
+              _unlocking
+                  ? 'Confirming the payment and unlocking the full artifact...'
+                  : _planSteps[_planTick],
+              key: ValueKey(_unlocking ? -1 : _planTick),
               style: AppTheme.body(14.5, color: AppTheme.textMuted),
             ),
           ),
@@ -589,13 +661,14 @@ class _StartScreenState extends State<StartScreen> {
             Text('Your build plan',
                 style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
             const Spacer(),
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.conversation),
-              builder: (h) => Text('Back to the conversation',
-                  style: AppTheme.body(13,
-                      color: h ? AppTheme.textPrimary : AppTheme.textMuted,
-                      height: 1.0)),
-            ),
+            if (_chat.isNotEmpty)
+              Hoverable(
+                onTap: () => setState(() => _stage = _Stage.conversation),
+                builder: (h) => Text('Back to the conversation',
+                    style: AppTheme.body(13,
+                        color: h ? AppTheme.textPrimary : AppTheme.textMuted,
+                        height: 1.0)),
+              ),
           ],
         ),
         if (_planNeedsReview) ...[
@@ -615,6 +688,53 @@ class _StartScreenState extends State<StartScreen> {
           ),
         ],
         const SizedBox(height: 16),
+        if (_planLocked) ...[
+          // The purchase fork, pinned above the fold. The free human path
+          // stays one click away: the plan monetizes the prospects who will
+          // not engage, it never blocks the ones who will.
+          Row(
+            children: [
+              Hoverable(
+                onTap: () => setState(() => _stage = _Stage.contact),
+                builder: (h) => Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                  child: Text('Send to a human, free',
+                      style: AppTheme.body(14,
+                          color: h
+                              ? AppTheme.textPrimary
+                              : AppTheme.textSecondary,
+                          height: 1.0)),
+                ),
+              ),
+              const Spacer(),
+              Opacity(
+                opacity: _checkingOut ? 0.6 : 1,
+                child: PrimaryButton(
+                  label: 'Unlock the full plan, ${_price('plan')}',
+                  icon: Icons.lock_open_rounded,
+                  onTap: () {
+                    if (!_checkingOut) _startCheckout('plan');
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Hoverable(
+              onTap: _checkingOut ? null : () => _startCheckout('reviewed'),
+              builder: (h) => Text(
+                'or ${_price('reviewed')} with a recorded founder teardown in 48h',
+                style: AppTheme.body(13.5,
+                    color: h ? AppTheme.purpleBright : AppTheme.purple,
+                    height: 1.0),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         if (_planSurface != null)
           Container(
             padding: const EdgeInsets.all(18),
@@ -628,29 +748,31 @@ class _StartScreenState extends State<StartScreen> {
             child:
                 GenUiRead(key: ValueKey(_planSurface), surface: _planSurface!),
           ),
-        const SizedBox(height: 22),
-        Row(
-          children: [
-            _iconChip(
-              _copied ? Icons.check_rounded : Icons.copy_all_rounded,
-              _copied ? 'Copied' : 'Copy as markdown',
-              () async {
-                await Clipboard.setData(ClipboardData(text: _planMarkdown));
-                if (!mounted) return;
-                setState(() => _copied = true);
-                Future.delayed(const Duration(seconds: 2), () {
-                  if (mounted) setState(() => _copied = false);
-                });
-              },
-            ),
-            const Spacer(),
-            PrimaryButton(
-              label: 'Build it with us',
-              icon: Icons.arrow_forward_rounded,
-              onTap: () => setState(() => _stage = _Stage.contact),
-            ),
-          ],
-        ),
+        if (!_planLocked) ...[
+          const SizedBox(height: 22),
+          Row(
+            children: [
+              _iconChip(
+                _copied ? Icons.check_rounded : Icons.copy_all_rounded,
+                _copied ? 'Copied' : 'Copy as markdown',
+                () async {
+                  await Clipboard.setData(ClipboardData(text: _planMarkdown));
+                  if (!mounted) return;
+                  setState(() => _copied = true);
+                  Future.delayed(const Duration(seconds: 2), () {
+                    if (mounted) setState(() => _copied = false);
+                  });
+                },
+              ),
+              const Spacer(),
+              PrimaryButton(
+                label: 'Build it with us',
+                icon: Icons.arrow_forward_rounded,
+                onTap: () => setState(() => _stage = _Stage.contact),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }
