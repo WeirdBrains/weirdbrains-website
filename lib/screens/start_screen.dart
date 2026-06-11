@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
@@ -10,12 +13,13 @@ import '../widgets/starfield.dart';
 import '../widgets/ui.dart';
 import '../widgets/genui_read.dart';
 
-/// The portal. Problem-first, voice-enabled, agentic. The AI reads the problem,
-/// then hones a brief with the user over a back-and-forth (ping-pong), with
-/// voice and file attachments throughout, before handing a real brief to a
-/// human. State flows:
-///   problem -> thinking -> scoped -> conversation -> contact -> done
-enum _Stage { problem, thinking, scoped, conversation, contact, done }
+/// The portal, running the WeirdBrains Method: READ the problem, HONE it over
+/// a back-and-forth (voice and files throughout), then generate the PLAN, a
+/// hardened build-plan artifact (drafted, independently critiqued by a second
+/// model, revised once). Either path hands off to a human. State flows:
+///   problem -> thinking -> scoped -> conversation -> (planning -> plan) ->
+///   contact -> done
+enum _Stage { problem, thinking, scoped, conversation, planning, plan, contact, done }
 
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key});
@@ -43,6 +47,12 @@ class _StartScreenState extends State<StartScreen> {
   Map<String, Object?>? _readSurface;
   final List<Map<String, String>> _chat = []; // [{role: 'user'|'ai', text}]
   Map<String, Object?>? _artifact; // the living brief, updated each turn
+  Map<String, Object?>? _planSurface; // the hardened plan artifact
+  String _planMarkdown = '';
+  bool _planNeedsReview = false;
+  Timer? _planTimer;
+  int _planTick = 0;
+  bool _copied = false;
   bool _sending = false;
   final List<Map<String, Object?>> _files = [];
   bool _uploading = false;
@@ -69,6 +79,7 @@ class _StartScreenState extends State<StartScreen> {
 
   @override
   void dispose() {
+    _planTimer?.cancel();
     _voice.stop();
     _problem.dispose();
     _chatInput.dispose();
@@ -144,10 +155,13 @@ class _StartScreenState extends State<StartScreen> {
       _submitting = true;
       _error = null;
     });
-    // The whole ping-pong transcript travels to the human as the discovery.
+    // The whole ping-pong transcript travels to the human as the discovery,
+    // and the generated plan (when there is one) rides along.
     final discovery = <Map<String, Object?>>[
       for (final m in _chat)
         {'q': m['role'] == 'ai' ? 'AI' : 'You', 'a': m['text'] ?? ''},
+      if (_planMarkdown.isNotEmpty)
+        {'q': 'AI Build Plan (markdown)', 'a': _planMarkdown},
     ];
     final err = await const IntakeService().submit(IntakeRequest(
       company: _company.text.trim().isEmpty
@@ -216,6 +230,8 @@ class _StartScreenState extends State<StartScreen> {
         _Stage.thinking => _loadingStage('Reading your problem...'),
         _Stage.scoped => _scopedStage(),
         _Stage.conversation => _conversationStage(),
+        _Stage.planning => _planningStage(),
+        _Stage.plan => _planStage(),
         _Stage.contact => _contactStage(),
         _Stage.done => _doneStage(),
       },
@@ -477,6 +493,168 @@ class _StartScreenState extends State<StartScreen> {
     });
   }
 
+  // ---- Stage 4b: the plan (loop 1: generate, critique, revise) ----
+  static const _planSteps = [
+    'Drafting your build plan from everything you told us...',
+    'Running the independent critique. A second model checks every number...',
+    'Revising the sections the critique flagged...',
+    'Assembling the artifact...',
+  ];
+
+  Future<void> _generatePlan() async {
+    await _voice.stop();
+    _planTimer?.cancel();
+    setState(() {
+      _chatListening = false;
+      _error = null;
+      _planTick = 0;
+      _stage = _Stage.planning;
+    });
+    // The loop takes a few minutes by design; narrate its real stages.
+    _planTimer = Timer.periodic(const Duration(seconds: 28), (_) {
+      if (!mounted) return;
+      setState(() => _planTick = (_planTick + 1).clamp(0, _planSteps.length - 1));
+    });
+    final history = [
+      for (final m in _chat) {'role': m['role'], 'text': m['text']},
+    ];
+    final res = await const PortalService()
+        .plan(_problem.text.trim(), history, _files);
+    _planTimer?.cancel();
+    if (!mounted) return;
+    if (res == null) {
+      setState(() {
+        _stage = _Stage.conversation;
+        _error =
+            'Plan generation is busy right now. Give it a minute and try again.';
+      });
+      return;
+    }
+    setState(() {
+      final s = res['surface'];
+      _planSurface = s is Map ? s.cast<String, Object?>() : null;
+      _planMarkdown = res['markdown']?.toString() ?? '';
+      _planNeedsReview = res['needsReview'] == true;
+      _stage = _planSurface == null ? _Stage.conversation : _Stage.plan;
+      if (_planSurface == null) {
+        _error =
+            'Plan generation is busy right now. Give it a minute and try again.';
+      }
+    });
+  }
+
+  Widget _planningStage() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: AppTheme.purpleBright),
+              ),
+              const SizedBox(width: 14),
+              Flexible(
+                child: Text('Building your plan',
+                    style: AppTheme.heading(18, color: AppTheme.textSecondary)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: Text(
+              _planSteps[_planTick],
+              key: ValueKey(_planTick),
+              style: AppTheme.body(14.5, color: AppTheme.textMuted),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _planStage() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
+            const SizedBox(width: 10),
+            Text('Your build plan',
+                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
+            const Spacer(),
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.conversation),
+              builder: (h) => Text('Back to the conversation',
+                  style: AppTheme.body(13,
+                      color: h ? AppTheme.textPrimary : AppTheme.textMuted,
+                      height: 1.0)),
+            ),
+          ],
+        ),
+        if (_planNeedsReview) ...[
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.gold.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.gold.withValues(alpha: 0.3)),
+            ),
+            child: Text(
+              'The independent critique flagged parts of this plan, so a human '
+              'will double-check it before anything moves.',
+              style: AppTheme.body(13, color: AppTheme.gold, height: 1.4),
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        if (_planSurface != null)
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: ShapeDecoration(
+              color: AppTheme.background.withValues(alpha: 0.4),
+              shape: RoundedSuperellipseBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: AppTheme.border),
+              ),
+            ),
+            child:
+                GenUiRead(key: ValueKey(_planSurface), surface: _planSurface!),
+          ),
+        const SizedBox(height: 22),
+        Row(
+          children: [
+            _iconChip(
+              _copied ? Icons.check_rounded : Icons.copy_all_rounded,
+              _copied ? 'Copied' : 'Copy as markdown',
+              () async {
+                await Clipboard.setData(ClipboardData(text: _planMarkdown));
+                if (!mounted) return;
+                setState(() => _copied = true);
+                Future.delayed(const Duration(seconds: 2), () {
+                  if (mounted) setState(() => _copied = false);
+                });
+              },
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Build it with us',
+              icon: Icons.arrow_forward_rounded,
+              onTap: () => setState(() => _stage = _Stage.contact),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Future<void> _toggleChatMic() async {
     if (_chatListening) {
       await _voice.stop();
@@ -549,6 +727,30 @@ class _StartScreenState extends State<StartScreen> {
           ],
         ),
         const SizedBox(height: 16),
+        // The two exits, pinned at the top so they never fall below the fold.
+        Row(
+          children: [
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.contact),
+              builder: (h) => Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                child: Text('Send to a human',
+                    style: AppTheme.body(14,
+                        color:
+                            h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                        height: 1.0)),
+              ),
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Get my Build Plan',
+              icon: Icons.auto_awesome,
+              onTap: _generatePlan,
+            ),
+          ],
+        ),
+        const SizedBox(height: 18),
         // The living artifact: the brief, updated every turn.
         if (_artifact != null)
           Container(
@@ -583,17 +785,6 @@ class _StartScreenState extends State<StartScreen> {
           Text(_error!,
               style: AppTheme.body(14, color: const Color(0xFFFF8585))),
         ],
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            const Spacer(),
-            PrimaryButton(
-              label: 'Send to a human',
-              icon: Icons.arrow_forward_rounded,
-              onTap: () => setState(() => _stage = _Stage.contact),
-            ),
-          ],
-        ),
       ],
     );
   }
