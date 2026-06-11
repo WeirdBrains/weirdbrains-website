@@ -70,10 +70,10 @@ class _StartScreenState extends State<StartScreen> {
   String? _error;
 
   static const _examples = [
-    'Read dental x-rays and flag pathology',
-    'Score pipe condition from drain-camera video',
-    'Triage support tickets by urgency',
-    'Catch defects on our production line',
+    'Automate our client intake and scheduling',
+    'Stop losing leads to slow follow-up',
+    'Pull data out of PDFs into our system',
+    'Build the first version of my product idea',
   ];
 
   // Apple-style squircle (Flutter 3.44 superellipse) shared by the inputs.
@@ -370,7 +370,7 @@ class _StartScreenState extends State<StartScreen> {
             },
             decoration: InputDecoration(
               hintText:
-                  'e.g. We run sliplining inspections and want AI to score pipe condition from our drain-camera video.',
+                  'e.g. Our office spends 15 hours a week retyping orders from PDFs and we keep falling behind.',
               hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
@@ -493,16 +493,30 @@ class _StartScreenState extends State<StartScreen> {
   void _startConversation() {
     setState(() {
       _artifact = _readSurface;
-      _chat
-        ..clear()
-        ..add({
-          'role': 'ai',
-          'text':
-              "Here's my first read. Tell me where it's off, add detail, or "
-                  "attach an example. When it looks right, send it to a human.",
-        });
+      _chat.clear();
       _error = null;
+      _sending = true;
       _stage = _Stage.conversation;
+    });
+    _openerTurn();
+  }
+
+  /// The AI opens the conversation with its first sharp question instead of
+  /// waiting passively: ping-pong starts on turn zero.
+  Future<void> _openerTurn() async {
+    final res =
+        await const PortalService().refine(_problem.text.trim(), const [], '', _files);
+    if (!mounted || _stage != _Stage.conversation) return;
+    setState(() {
+      _sending = false;
+      _chat.add({
+        'role': 'ai',
+        'text': res['reply']?.toString() ??
+            "Here's my first read. Tell me where it's off, add detail, or "
+                'attach an example.',
+      });
+      final b = res['brief'];
+      if (b is Map) _artifact = b.cast<String, Object?>();
     });
   }
 
