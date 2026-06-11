@@ -79,6 +79,8 @@ final Catalog _wbCatalog = Catalog(
     _callout,
     _phaseCard,
     _effortSignal,
+    _bullet,
+    _altCard,
   ],
   catalogId: 'wb',
 );
@@ -266,6 +268,93 @@ final _phaseCard = CatalogItem(
             ),
             const SizedBox(height: 8),
             Text(text, style: AppTheme.body(14, height: 1.5)),
+          ],
+        ),
+      ),
+    );
+  },
+);
+
+/// A plain bullet line (evidence, failure modes, acceptance criteria).
+final _bullet = CatalogItem(
+  name: 'Bullet',
+  dataSchema: S.object(
+    description: 'A single bullet line.',
+    properties: <String, S>{'text': S.string()},
+    required: ['text'],
+  ),
+  widgetBuilder: (c) {
+    final text = _props(c)['text'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Container(
+              width: 5,
+              height: 5,
+              decoration: BoxDecoration(
+                color: AppTheme.textMuted,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Text(text, style: AppTheme.body(14, height: 1.55))),
+        ],
+      ),
+    );
+  },
+);
+
+/// An alternative approach card: name, effort/risk meta line, summary.
+final _altCard = CatalogItem(
+  name: 'AltCard',
+  dataSchema: S.object(
+    description: 'An alternative approach considered in the plan.',
+    properties: <String, S>{
+      'name': S.string(),
+      'meta': S.string(),
+      'text': S.string(),
+    },
+    required: ['name', 'text'],
+  ),
+  widgetBuilder: (c) {
+    final p = _props(c);
+    final name = p['name'] as String? ?? '';
+    final meta = p['meta'] as String? ?? '';
+    final text = p['text'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: ShapeDecoration(
+          color: Colors.white.withValues(alpha: 0.02),
+          shape: RoundedSuperellipseBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: AppTheme.border),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(name, style: AppTheme.heading(14.5)),
+                ),
+                if (meta.isNotEmpty)
+                  Text(
+                    meta,
+                    style:
+                        AppTheme.body(12, color: AppTheme.textMuted, height: 1.0),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(text, style: AppTheme.body(13.5, height: 1.5)),
           ],
         ),
       ),

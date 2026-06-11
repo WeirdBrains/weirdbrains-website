@@ -90,6 +90,23 @@ class PortalService {
     }
   }
 
+  /// The hardened Build Plan artifact (loop 1: generate, independent critique,
+  /// one revision). Slow by design (a few minutes); returns null on failure
+  /// because a paid artifact gets a retry, never a canned fallback.
+  /// Shape: {surface, markdown, verdict, needsReview, door}.
+  Future<Map<String, Object?>?> plan(String problem,
+      List<Map<String, Object?>> history, List<Map<String, Object?>> files) async {
+    try {
+      return await _postJson(
+        '/portal/plan',
+        {'problem': problem, 'history': history, 'files': files},
+        timeout: const Duration(seconds: 300),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Upload one file's bytes; returns its metadata {id, name, size}.
   Future<Map<String, Object?>> upload(String name, List<int> bytes) async {
     final uri = _uri('/portal/upload?name=${Uri.encodeQueryComponent(name)}');
