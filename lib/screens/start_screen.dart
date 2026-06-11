@@ -727,6 +727,30 @@ class _StartScreenState extends State<StartScreen> {
           ],
         ),
         const SizedBox(height: 16),
+        // The two exits, pinned at the top so they never fall below the fold.
+        Row(
+          children: [
+            Hoverable(
+              onTap: () => setState(() => _stage = _Stage.contact),
+              builder: (h) => Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                child: Text('Send to a human',
+                    style: AppTheme.body(14,
+                        color:
+                            h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                        height: 1.0)),
+              ),
+            ),
+            const Spacer(),
+            PrimaryButton(
+              label: 'Get my Build Plan',
+              icon: Icons.auto_awesome,
+              onTap: _generatePlan,
+            ),
+          ],
+        ),
+        const SizedBox(height: 18),
         // The living artifact: the brief, updated every turn.
         if (_artifact != null)
           Container(
@@ -761,29 +785,6 @@ class _StartScreenState extends State<StartScreen> {
           Text(_error!,
               style: AppTheme.body(14, color: const Color(0xFFFF8585))),
         ],
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.contact),
-              builder: (h) => Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                child: Text('Send to a human',
-                    style: AppTheme.body(15,
-                        color:
-                            h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                        height: 1.0)),
-              ),
-            ),
-            const Spacer(),
-            PrimaryButton(
-              label: 'Get my Build Plan',
-              icon: Icons.auto_awesome,
-              onTap: _generatePlan,
-            ),
-          ],
-        ),
       ],
     );
   }
