@@ -51,6 +51,7 @@ class _StartScreenState extends State<StartScreen> {
   _Stage _stage = _Stage.problem;
   Map<String, Object?>? _readSurface;
   final List<Map<String, String>> _chat = []; // [{role: 'user'|'ai', text}]
+  List<String> _choices = const []; // one-tap answers for the last AI question
   Map<String, Object?>? _artifact; // the living brief, updated each turn
   Map<String, Object?>? _planSurface; // the hardened plan artifact
   String _planMarkdown = '';
@@ -283,12 +284,15 @@ class _StartScreenState extends State<StartScreen> {
       children: [
         _backToHome(),
         const SizedBox(height: 26),
-        Text('What do you want AI to solve?', style: AppTheme.heading(28)),
+        Text('Describe the problem. Get a Build Plan.',
+            style: AppTheme.heading(28)),
         const SizedBox(height: 10),
         Text(
           _voiceAvailable
-              ? 'Describe the problem in your own words. Type it, or just talk.'
-              : 'Describe the problem in your own words.',
+              ? 'A real plan for the thing you keep working around: the fix, '
+                  'what it costs, and what week one looks like. Type it, or just talk.'
+              : 'A real plan for the thing you keep working around: the fix, '
+                  'what it costs, and what week one looks like.',
           style: AppTheme.body(15),
         ),
         const SizedBox(height: 24),
@@ -370,7 +374,7 @@ class _StartScreenState extends State<StartScreen> {
             },
             decoration: InputDecoration(
               hintText:
-                  'e.g. Our office spends 15 hours a week retyping orders from PDFs and we keep falling behind.',
+                  'e.g. We lose 5+ hours a week re-typing orders from email into QuickBooks, and mistakes still slip through.',
               hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
@@ -479,7 +483,7 @@ class _StartScreenState extends State<StartScreen> {
             ),
             const Spacer(),
             PrimaryButton(
-              label: 'Hone it with AI',
+              label: 'Sharpen my problem',
               icon: Icons.arrow_forward_rounded,
               onTap: _startConversation,
             ),
@@ -512,16 +516,24 @@ class _StartScreenState extends State<StartScreen> {
       _chat.add({
         'role': 'ai',
         'text': res['reply']?.toString() ??
-            "Here's my first read. Tell me where it's off, add detail, or "
-                'attach an example.',
+            'Tell me one thing first: which number hurts most right now?',
       });
+      _choices = _stringList(res['choices']);
       final b = res['brief'];
       if (b is Map) _artifact = b.cast<String, Object?>();
     });
   }
 
-  Future<void> _sendRefine() async {
-    final msg = _chatInput.text.trim();
+  List<String> _stringList(Object? v) => v is List
+      ? v.map((e) => e.toString()).where((s) => s.isNotEmpty).toList()
+      : const [];
+
+  Future<void> _sendRefine() => _sendMessage(_chatInput.text.trim());
+
+  /// One-tap chip answers: the easiest possible reply is a tap.
+  Future<void> _sendChoice(String choice) => _sendMessage(choice);
+
+  Future<void> _sendMessage(String msg) async {
     if (msg.isEmpty || _sending) return;
     await _voice.stop();
     final history = [
@@ -531,6 +543,7 @@ class _StartScreenState extends State<StartScreen> {
       _chat.add({'role': 'user', 'text': msg});
       _chatInput.clear();
       _chatListening = false;
+      _choices = const [];
       _sending = true;
       _error = null;
     });
@@ -539,6 +552,7 @@ class _StartScreenState extends State<StartScreen> {
     if (!mounted) return;
     setState(() {
       _chat.add({'role': 'ai', 'text': res['reply']?.toString() ?? 'Updated.'});
+      _choices = _stringList(res['choices']);
       final b = res['brief'];
       if (b is Map) _artifact = b.cast<String, Object?>();
       _sending = false;
@@ -546,11 +560,13 @@ class _StartScreenState extends State<StartScreen> {
   }
 
   // ---- Stage 4b: the plan (loop 1: generate, critique, revise) ----
+  // The labor illusion, honestly applied: narrate the real pipeline steps in
+  // concrete verbs while the loop runs.
   static const _planSteps = [
-    'Drafting your build plan from everything you told us...',
-    'Running the independent critique. A second model checks every number...',
-    'Revising the sections the critique flagged...',
-    'Assembling the artifact...',
+    'Reading everything you told me, slowly...',
+    'Choosing the smallest build that fixes it...',
+    'Pricing the phases and flagging the risks...',
+    'Running an independent check on every number...',
   ];
 
   Future<void> _generatePlan() async {
@@ -703,29 +719,31 @@ class _StartScreenState extends State<StartScreen> {
         ],
         const SizedBox(height: 16),
         if (_planLocked) ...[
-          // The purchase fork, pinned above the fold. The free human path
-          // stays one click away: the plan monetizes the prospects who will
-          // not engage, it never blocks the ones who will.
+          // Purchase column in descending price order: the $199 tier anchors,
+          // $79 reads as the safe middle, and the free human path stays one
+          // click away so the plan never blocks a real lead.
+          Align(
+            alignment: Alignment.centerRight,
+            child: Hoverable(
+              onTap: _checkingOut ? null : () => _startCheckout('reviewed'),
+              builder: (h) => Text(
+                '${_price('reviewed')}: plan + 30 minutes live with a founder, '
+                'credited if we build it',
+                textAlign: TextAlign.right,
+                style: AppTheme.body(13.5,
+                    color: h ? AppTheme.purpleBright : AppTheme.purple,
+                    height: 1.3),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
-              Hoverable(
-                onTap: () => setState(() => _stage = _Stage.contact),
-                builder: (h) => Padding(
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-                  child: Text('Send to a human, free',
-                      style: AppTheme.body(14,
-                          color: h
-                              ? AppTheme.textPrimary
-                              : AppTheme.textSecondary,
-                          height: 1.0)),
-                ),
-              ),
               const Spacer(),
               Opacity(
                 opacity: _checkingOut ? 0.6 : 1,
                 child: PrimaryButton(
-                  label: 'Unlock the full plan, ${_price('plan')}',
+                  label: 'Unlock my full plan, ${_price('plan')}',
                   icon: Icons.lock_open_rounded,
                   onTap: () {
                     if (!_checkingOut) _startCheckout('plan');
@@ -738,13 +756,12 @@ class _StartScreenState extends State<StartScreen> {
           Align(
             alignment: Alignment.centerRight,
             child: Hoverable(
-              onTap: _checkingOut ? null : () => _startCheckout('reviewed'),
-              builder: (h) => Text(
-                'or ${_price('reviewed')} with a recorded founder teardown in 48h',
-                style: AppTheme.body(13.5,
-                    color: h ? AppTheme.purpleBright : AppTheme.purple,
-                    height: 1.0),
-              ),
+              onTap: () => setState(() => _stage = _Stage.contact),
+              builder: (h) => Text('or send it to a human, free',
+                  style: AppTheme.body(13.5,
+                      color:
+                          h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                      height: 1.0)),
             ),
           ),
           const SizedBox(height: 16),
@@ -886,19 +903,35 @@ class _StartScreenState extends State<StartScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 18),
-        // The living artifact: the brief, updated every turn.
+        const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Text(
+            'Every answer below makes it sharper. You see the outline before paying.',
+            style: AppTheme.body(12, color: AppTheme.textMuted, height: 1.2),
+          ),
+        ),
+        const SizedBox(height: 14),
+        // The living artifact: the brief, updated every turn. Height-capped
+        // with its own scroll so the conversation (the engagement surface)
+        // never falls below the fold.
         if (_artifact != null)
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: ShapeDecoration(
-              color: AppTheme.background.withValues(alpha: 0.4),
-              shape: RoundedSuperellipseBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: AppTheme.border),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 280),
+            child: Container(
+              padding: const EdgeInsets.all(18),
+              decoration: ShapeDecoration(
+                color: AppTheme.background.withValues(alpha: 0.4),
+                shape: RoundedSuperellipseBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: BorderSide(color: AppTheme.border),
+                ),
+              ),
+              child: SingleChildScrollView(
+                child:
+                    GenUiRead(key: ValueKey(_artifact), surface: _artifact!),
               ),
             ),
-            child: GenUiRead(key: ValueKey(_artifact), surface: _artifact!),
           ),
         const SizedBox(height: 22),
         // The dialogue.
@@ -908,6 +941,36 @@ class _StartScreenState extends State<StartScreen> {
         ],
         if (_sending) ...[
           _chatBubble('ai', 'Thinking...'),
+          const SizedBox(height: 12),
+        ],
+        // One-tap answers for the AI's last question.
+        if (!_sending && _choices.isNotEmpty) ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final c in _choices)
+                Hoverable(
+                  onTap: () => _sendChoice(c),
+                  builder: (h) => Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: h
+                          ? AppTheme.purple.withValues(alpha: 0.18)
+                          : AppTheme.purple.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                          color: AppTheme.purple
+                              .withValues(alpha: h ? 0.55 : 0.35)),
+                    ),
+                    child: Text(c,
+                        style: AppTheme.body(13.5,
+                            color: AppTheme.purpleBright, height: 1.0)),
+                  ),
+                ),
+            ],
+          ),
           const SizedBox(height: 12),
         ],
         if (_files.isNotEmpty) ...[
@@ -1106,7 +1169,9 @@ class _StartScreenState extends State<StartScreen> {
         children: [
           Text('Where do we send your brief?', style: AppTheme.heading(26)),
           const SizedBox(height: 10),
-          Text('A human reviews every brief. No spam, no autoresponders.',
+          Text(
+              'A real person reads it and replies, usually within a day. '
+              'No spam, no autoresponders.',
               style: AppTheme.body(15)),
           const SizedBox(height: 26),
           _field(_name, 'Your name', hint: 'Jane Rivera', validator: _required),
