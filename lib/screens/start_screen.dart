@@ -935,44 +935,56 @@ class _StartScreenState extends State<StartScreen> {
             ),
           ),
         const SizedBox(height: 22),
-        // The dialogue.
-        for (final m in _chat) ...[
-          _chatBubble(m['role'] ?? 'ai', m['text'] ?? ''),
+        // The dialogue: history dims, the live question owns the card.
+        for (var i = 0; i < _chat.length; i++) ...[
+          if (i == _chat.length - 1 && _chat[i]['role'] == 'ai' && !_sending)
+            _liveQuestion(_chat[i]['text'] ?? '')
+          else
+            Opacity(
+              opacity: i >= _chat.length - 2 ? 1 : 0.55,
+              child:
+                  _chatBubble(_chat[i]['role'] ?? 'ai', _chat[i]['text'] ?? ''),
+            ),
           const SizedBox(height: 12),
         ],
         if (_sending) ...[
           _chatBubble('ai', 'Thinking...'),
           const SizedBox(height: 12),
         ],
-        // One-tap answers for the AI's last question.
+        // One-tap answers: proper answer buttons, not tags.
         if (!_sending && _choices.isNotEmpty) ...[
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: 10,
+            runSpacing: 10,
             children: [
               for (final c in _choices)
                 Hoverable(
                   onTap: () => _sendChoice(c),
                   builder: (h) => Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 9),
-                    decoration: BoxDecoration(
+                        horizontal: 20, vertical: 13),
+                    decoration: ShapeDecoration(
                       color: h
-                          ? AppTheme.purple.withValues(alpha: 0.18)
-                          : AppTheme.purple.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                          color: AppTheme.purple
-                              .withValues(alpha: h ? 0.55 : 0.35)),
+                          ? AppTheme.purple.withValues(alpha: 0.28)
+                          : AppTheme.purple.withValues(alpha: 0.14),
+                      shape: RoundedSuperellipseBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: BorderSide(
+                            color: AppTheme.purple
+                                .withValues(alpha: h ? 0.8 : 0.5),
+                            width: 1.2),
+                      ),
                     ),
                     child: Text(c,
-                        style: AppTheme.body(13.5,
-                            color: AppTheme.purpleBright, height: 1.0)),
+                        style: AppTheme.body(15,
+                                color: h ? Colors.white : AppTheme.purpleBright,
+                                height: 1.0)
+                            .copyWith(fontWeight: FontWeight.w600)),
                   ),
                 ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
         ],
         if (_files.isNotEmpty) ...[
           const SizedBox(height: 2),
@@ -986,6 +998,42 @@ class _StartScreenState extends State<StartScreen> {
               style: AppTheme.body(14, color: const Color(0xFFFF8585))),
         ],
       ],
+    );
+  }
+
+  /// The AI's latest turn, rendered as THE question rather than one more
+  /// bubble: context line muted, the question itself large and bright.
+  Widget _liveQuestion(String text) {
+    var lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    var question = lines.isEmpty ? text : lines.removeLast();
+    // Single-line replies carry reaction + question together: split at the
+    // last sentence break before the question.
+    if (lines.isEmpty && question.endsWith('?')) {
+      final idx = question.lastIndexOf(RegExp(r'[.!…]'));
+      if (idx > 12 && idx < question.length - 8) {
+        lines = [question.substring(0, idx + 1).trim()];
+        question = question.substring(idx + 1).trim();
+      }
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (lines.isNotEmpty) ...[
+            Text(lines.join('\n'),
+                style: AppTheme.body(14.5,
+                    color: AppTheme.textSecondary, height: 1.5)),
+            const SizedBox(height: 10),
+          ],
+          Text(question,
+              style: AppTheme.heading(20, color: AppTheme.textPrimary)),
+        ],
+      ),
     );
   }
 
