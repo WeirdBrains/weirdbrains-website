@@ -516,7 +516,8 @@ class _StartScreenState extends State<StartScreen> {
       _chat.add({
         'role': 'ai',
         'text': res['reply']?.toString() ??
-            'Tell me one thing first: which number hurts most right now?',
+            "Quick one first: which number hurts most right now, new "
+                'business, capacity, or cost?',
       });
       _choices = _stringList(res['choices']);
       final b = res['brief'];
@@ -1066,7 +1067,7 @@ class _StartScreenState extends State<StartScreen> {
             style: AppTheme.body(15, color: AppTheme.textPrimary, height: 1.45),
             onSubmitted: (_) => _sendRefine(),
             decoration: InputDecoration(
-              hintText: 'Add detail, correct us, or ask a question...',
+              hintText: 'Answer, push back, or ask me something...',
               hintStyle: AppTheme.body(14.5, color: AppTheme.textMuted),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
