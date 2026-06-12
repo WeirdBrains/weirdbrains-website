@@ -81,6 +81,7 @@ final Catalog _wbCatalog = Catalog(
     _effortSignal,
     _bullet,
     _altCard,
+    _lockedSection,
   ],
   catalogId: 'wb',
 );
@@ -355,6 +356,46 @@ final _altCard = CatalogItem(
             ),
             const SizedBox(height: 6),
             Text(text, style: AppTheme.body(13.5, height: 1.5)),
+          ],
+        ),
+      ),
+    );
+  },
+);
+
+/// A locked row in the plan preview: a section the full plan unlocks.
+final _lockedSection = CatalogItem(
+  name: 'LockedSection',
+  dataSchema: S.object(
+    description: 'A locked section title in the plan preview.',
+    properties: <String, S>{'title': S.string()},
+    required: ['title'],
+  ),
+  widgetBuilder: (c) {
+    final title = _props(c)['title'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        decoration: ShapeDecoration(
+          color: Colors.white.withValues(alpha: 0.02),
+          shape: RoundedSuperellipseBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: AppTheme.border),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.lock_outline_rounded,
+                size: 15, color: AppTheme.textMuted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: AppTheme.body(13.5,
+                    color: AppTheme.textSecondary, height: 1.3),
+              ),
+            ),
           ],
         ),
       ),

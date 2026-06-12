@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../services/intake_service.dart';
 import '../services/voice_service.dart';
@@ -13,16 +14,21 @@ import '../widgets/starfield.dart';
 import '../widgets/ui.dart';
 import '../widgets/genui_read.dart';
 
-/// The portal, running the WeirdBrains Method: READ the problem, HONE it over
-/// a back-and-forth (voice and files throughout), then generate the PLAN, a
-/// hardened build-plan artifact (drafted, independently critiqued by a second
-/// model, revised once). Either path hands off to a human. State flows:
-///   problem -> thinking -> scoped -> conversation -> (planning -> plan) ->
-///   contact -> done
-enum _Stage { problem, thinking, scoped, conversation, planning, plan, contact, done }
+/// The portal, running the WeirdBrains Method: describe the problem, HONE it
+/// over a back-and-forth (voice and files throughout), then generate the
+/// PLAN, a hardened build-plan artifact (drafted, independently critiqued by
+/// a second model, revised once). Either path hands off to a human. The old
+/// "first-pass read" interstitial is gone: the conversation opener proves
+/// understanding and asks the first question in one beat. State flows:
+///   problem -> conversation -> (planning -> plan) -> contact -> done
+enum _Stage { problem, conversation, planning, plan, contact, done }
 
 class StartScreen extends StatefulWidget {
-  const StartScreen({super.key});
+  const StartScreen({super.key, this.unlockPlanId, this.checkoutSession});
+
+  /// Set when Stripe redirects back after payment: /start?unlock=...&cs=...
+  final String? unlockPlanId;
+  final String? checkoutSession;
 
   @override
   State<StartScreen> createState() => _StartScreenState();
@@ -44,12 +50,17 @@ class _StartScreenState extends State<StartScreen> {
   String _preVoiceText = '';
 
   _Stage _stage = _Stage.problem;
-  Map<String, Object?>? _readSurface;
   final List<Map<String, String>> _chat = []; // [{role: 'user'|'ai', text}]
+  List<String> _choices = const []; // one-tap answers for the last AI question
   Map<String, Object?>? _artifact; // the living brief, updated each turn
   Map<String, Object?>? _planSurface; // the hardened plan artifact
   String _planMarkdown = '';
   bool _planNeedsReview = false;
+  String? _planId;
+  bool _planLocked = false;
+  Map<String, Object?> _prices = const {};
+  bool _checkingOut = false;
+  bool _unlocking = false;
   Timer? _planTimer;
   int _planTick = 0;
   bool _copied = false;
@@ -60,10 +71,10 @@ class _StartScreenState extends State<StartScreen> {
   String? _error;
 
   static const _examples = [
-    'Read dental x-rays and flag pathology',
-    'Score pipe condition from drain-camera video',
-    'Triage support tickets by urgency',
-    'Catch defects on our production line',
+    'Automate our client intake and scheduling',
+    'Stop losing leads to slow follow-up',
+    'Pull data out of PDFs into our system',
+    'Build the first version of my product idea',
   ];
 
   // Apple-style squircle (Flutter 3.44 superellipse) shared by the inputs.
@@ -75,6 +86,34 @@ class _StartScreenState extends State<StartScreen> {
     super.initState();
     // Gesture-free feature detection. Actual init happens on the mic click.
     _voiceAvailable = speechRecognitionSupported();
+    // Returning from Stripe: verify payment and open the full plan.
+    final unlockId = widget.unlockPlanId;
+    if (unlockId != null && unlockId.isNotEmpty) {
+      _unlocking = true;
+      _stage = _Stage.planning;
+      _unlockPlan(unlockId, widget.checkoutSession ?? '');
+    }
+  }
+
+  Future<void> _unlockPlan(String planId, String cs) async {
+    final res = await const PortalService().unlock(planId, cs);
+    if (!mounted) return;
+    setState(() {
+      _unlocking = false;
+      if (res == null || res['surface'] is! Map) {
+        _stage = _Stage.problem;
+        _error =
+            'We could not confirm the payment yet. Give it a minute and reopen '
+            'the link from your receipt, or email hello@weirdbrains.com.';
+        return;
+      }
+      _planId = planId;
+      _planLocked = false;
+      _planSurface = (res['surface'] as Map).cast<String, Object?>();
+      _planMarkdown = res['markdown']?.toString() ?? '';
+      _planNeedsReview = res['needsReview'] == true;
+      _stage = _Stage.plan;
+    });
   }
 
   @override
@@ -130,7 +169,10 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  Future<void> _readProblem() async {
+  /// Straight from the problem into the conversation: the opener turn proves
+  /// the machine understood (mirror) and starts the ping-pong (question) in
+  /// a single wait.
+  Future<void> _beginHoning() async {
     if (!_problemValid) {
       setState(() => _error = 'Give us a sentence or two so we can read it.');
       return;
@@ -139,14 +181,13 @@ class _StartScreenState extends State<StartScreen> {
     setState(() {
       _listening = false;
       _error = null;
-      _stage = _Stage.thinking;
+      _artifact = null;
+      _chat.clear();
+      _choices = const [];
+      _sending = true;
+      _stage = _Stage.conversation;
     });
-    final surface = await const PortalService().read(_problem.text.trim());
-    if (!mounted) return;
-    setState(() {
-      _readSurface = surface;
-      _stage = _Stage.scoped;
-    });
+    _openerTurn();
   }
 
   Future<void> _submit() async {
@@ -227,8 +268,6 @@ class _StartScreenState extends State<StartScreen> {
       ),
       child: switch (_stage) {
         _Stage.problem => _problemStage(),
-        _Stage.thinking => _loadingStage('Reading your problem...'),
-        _Stage.scoped => _scopedStage(),
         _Stage.conversation => _conversationStage(),
         _Stage.planning => _planningStage(),
         _Stage.plan => _planStage(),
@@ -245,12 +284,15 @@ class _StartScreenState extends State<StartScreen> {
       children: [
         _backToHome(),
         const SizedBox(height: 26),
-        Text('What do you want AI to solve?', style: AppTheme.heading(28)),
+        Text('Describe the problem. Get a Build Plan.',
+            style: AppTheme.heading(28)),
         const SizedBox(height: 10),
         Text(
           _voiceAvailable
-              ? 'Describe the problem in your own words. Type it, or just talk.'
-              : 'Describe the problem in your own words.',
+              ? 'A real plan for the thing you keep working around: the fix, '
+                  'what it costs, and what week one looks like. Type it, or just talk.'
+              : 'A real plan for the thing you keep working around: the fix, '
+                  'what it costs, and what week one looks like.',
           style: AppTheme.body(15),
         ),
         const SizedBox(height: 24),
@@ -298,9 +340,9 @@ class _StartScreenState extends State<StartScreen> {
           children: [
             const Spacer(),
             PrimaryButton(
-              label: 'Continue',
+              label: 'Sharpen my problem',
               icon: Icons.arrow_forward_rounded,
-              onTap: _readProblem,
+              onTap: _beginHoning,
             ),
           ],
         ),
@@ -332,7 +374,7 @@ class _StartScreenState extends State<StartScreen> {
             },
             decoration: InputDecoration(
               hintText:
-                  'e.g. We run sliplining inspections and want AI to score pipe condition from our drain-camera video.',
+                  'e.g. We lose 5+ hours a week re-typing orders from email into QuickBooks, and mistakes still slip through.',
               hintStyle: AppTheme.body(15, color: AppTheme.textMuted),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
@@ -389,87 +431,38 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Loading ----
-  Widget _loadingStage(String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 28),
-      child: Row(
-        children: [
-          const SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(
-                strokeWidth: 2, color: AppTheme.purpleBright),
-          ),
-          const SizedBox(width: 14),
-          Flexible(
-            child: Text(label,
-                style: AppTheme.heading(18, color: AppTheme.textSecondary)),
-          ),
-        ],
-      ),
-    );
-  }
 
-  // ---- Stage 3: the agent's read (generated server-side, rendered via GenUI) ----
-  Widget _scopedStage() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
-            const SizedBox(width: 10),
-            Text('First-pass read',
-                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
-          ],
-        ),
-        const SizedBox(height: 16),
-        GenUiRead(key: ValueKey(_readSurface), surface: _readSurface!),
-        const SizedBox(height: 26),
-        Row(
-          children: [
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.problem),
-              builder: (h) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                child: Text('Edit',
-                    style: AppTheme.body(15,
-                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                        height: 1.0)),
-              ),
-            ),
-            const Spacer(),
-            PrimaryButton(
-              label: 'Hone it with AI',
-              icon: Icons.arrow_forward_rounded,
-              onTap: _startConversation,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
 
-  // ---- Stage 4: ping-pong refinement (artifact + chat) ----
-  void _startConversation() {
+  /// The AI opens the conversation with its first sharp question instead of
+  /// waiting passively: ping-pong starts on turn zero.
+  Future<void> _openerTurn() async {
+    final res =
+        await const PortalService().refine(_problem.text.trim(), const [], '', _files);
+    if (!mounted || _stage != _Stage.conversation) return;
     setState(() {
-      _artifact = _readSurface;
-      _chat
-        ..clear()
-        ..add({
-          'role': 'ai',
-          'text':
-              "Here's my first read. Tell me where it's off, add detail, or "
-                  "attach an example. When it looks right, send it to a human.",
-        });
-      _error = null;
-      _stage = _Stage.conversation;
+      _sending = false;
+      _chat.add({
+        'role': 'ai',
+        'text': res['reply']?.toString() ??
+            "Quick one first: which number hurts most right now, new "
+                'business, capacity, or cost?',
+      });
+      _choices = _stringList(res['choices']);
+      final b = res['brief'];
+      if (b is Map) _artifact = b.cast<String, Object?>();
     });
   }
 
-  Future<void> _sendRefine() async {
-    final msg = _chatInput.text.trim();
+  List<String> _stringList(Object? v) => v is List
+      ? v.map((e) => e.toString()).where((s) => s.isNotEmpty).toList()
+      : const [];
+
+  Future<void> _sendRefine() => _sendMessage(_chatInput.text.trim());
+
+  /// One-tap chip answers: the easiest possible reply is a tap.
+  Future<void> _sendChoice(String choice) => _sendMessage(choice);
+
+  Future<void> _sendMessage(String msg) async {
     if (msg.isEmpty || _sending) return;
     await _voice.stop();
     final history = [
@@ -479,6 +472,7 @@ class _StartScreenState extends State<StartScreen> {
       _chat.add({'role': 'user', 'text': msg});
       _chatInput.clear();
       _chatListening = false;
+      _choices = const [];
       _sending = true;
       _error = null;
     });
@@ -487,6 +481,7 @@ class _StartScreenState extends State<StartScreen> {
     if (!mounted) return;
     setState(() {
       _chat.add({'role': 'ai', 'text': res['reply']?.toString() ?? 'Updated.'});
+      _choices = _stringList(res['choices']);
       final b = res['brief'];
       if (b is Map) _artifact = b.cast<String, Object?>();
       _sending = false;
@@ -494,11 +489,13 @@ class _StartScreenState extends State<StartScreen> {
   }
 
   // ---- Stage 4b: the plan (loop 1: generate, critique, revise) ----
+  // The labor illusion, honestly applied: narrate the real pipeline steps in
+  // concrete verbs while the loop runs.
   static const _planSteps = [
-    'Drafting your build plan from everything you told us...',
-    'Running the independent critique. A second model checks every number...',
-    'Revising the sections the critique flagged...',
-    'Assembling the artifact...',
+    'Reading everything you told me, slowly...',
+    'Choosing the smallest build that fixes it...',
+    'Pricing the phases and flagging the risks...',
+    'Running an independent check on every number...',
   ];
 
   Future<void> _generatePlan() async {
@@ -535,12 +532,43 @@ class _StartScreenState extends State<StartScreen> {
       _planSurface = s is Map ? s.cast<String, Object?>() : null;
       _planMarkdown = res['markdown']?.toString() ?? '';
       _planNeedsReview = res['needsReview'] == true;
+      _planId = res['planId']?.toString();
+      _planLocked = res['locked'] == true;
+      final p = res['prices'];
+      _prices = p is Map ? p.cast<String, Object?>() : const {};
       _stage = _planSurface == null ? _Stage.conversation : _Stage.plan;
       if (_planSurface == null) {
         _error =
             'Plan generation is busy right now. Give it a minute and try again.';
       }
     });
+  }
+
+  Future<void> _startCheckout(String tier) async {
+    final planId = _planId;
+    if (planId == null || _checkingOut) return;
+    setState(() {
+      _checkingOut = true;
+      _error = null;
+    });
+    final url = await const PortalService().checkout(planId, tier);
+    if (!mounted) return;
+    if (url == null) {
+      setState(() {
+        _checkingOut = false;
+        _error = 'Could not start checkout. Try again in a moment.';
+      });
+      return;
+    }
+    // Same-tab redirect to Stripe; we come back via /start?unlock=...
+    await launchUrl(Uri.parse(url), webOnlyWindowName: '_self');
+    if (mounted) setState(() => _checkingOut = false);
+  }
+
+  String _price(String tier) {
+    final cents = _prices[tier];
+    final n = cents is num ? cents.toInt() : (tier == 'reviewed' ? 19900 : 7900);
+    return '\$${(n / 100).round()}';
   }
 
   Widget _planningStage() {
@@ -559,7 +587,8 @@ class _StartScreenState extends State<StartScreen> {
               ),
               const SizedBox(width: 14),
               Flexible(
-                child: Text('Building your plan',
+                child: Text(
+                    _unlocking ? 'Opening your plan' : 'Building your plan',
                     style: AppTheme.heading(18, color: AppTheme.textSecondary)),
               ),
             ],
@@ -568,8 +597,10 @@ class _StartScreenState extends State<StartScreen> {
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
             child: Text(
-              _planSteps[_planTick],
-              key: ValueKey(_planTick),
+              _unlocking
+                  ? 'Confirming the payment and unlocking the full artifact...'
+                  : _planSteps[_planTick],
+              key: ValueKey(_unlocking ? -1 : _planTick),
               style: AppTheme.body(14.5, color: AppTheme.textMuted),
             ),
           ),
@@ -589,13 +620,14 @@ class _StartScreenState extends State<StartScreen> {
             Text('Your build plan',
                 style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
             const Spacer(),
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.conversation),
-              builder: (h) => Text('Back to the conversation',
-                  style: AppTheme.body(13,
-                      color: h ? AppTheme.textPrimary : AppTheme.textMuted,
-                      height: 1.0)),
-            ),
+            if (_chat.isNotEmpty)
+              Hoverable(
+                onTap: () => setState(() => _stage = _Stage.conversation),
+                builder: (h) => Text('Back to the conversation',
+                    style: AppTheme.body(13,
+                        color: h ? AppTheme.textPrimary : AppTheme.textMuted,
+                        height: 1.0)),
+              ),
           ],
         ),
         if (_planNeedsReview) ...[
@@ -615,6 +647,54 @@ class _StartScreenState extends State<StartScreen> {
           ),
         ],
         const SizedBox(height: 16),
+        if (_planLocked) ...[
+          // Purchase column in descending price order: the $199 tier anchors,
+          // $79 reads as the safe middle, and the free human path stays one
+          // click away so the plan never blocks a real lead.
+          Align(
+            alignment: Alignment.centerRight,
+            child: Hoverable(
+              onTap: _checkingOut ? null : () => _startCheckout('reviewed'),
+              builder: (h) => Text(
+                '${_price('reviewed')}: plan + 30 minutes live with a founder, '
+                'credited if we build it',
+                textAlign: TextAlign.right,
+                style: AppTheme.body(13.5,
+                    color: h ? AppTheme.purpleBright : AppTheme.purple,
+                    height: 1.3),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Spacer(),
+              Opacity(
+                opacity: _checkingOut ? 0.6 : 1,
+                child: PrimaryButton(
+                  label: 'Unlock my full plan, ${_price('plan')}',
+                  icon: Icons.lock_open_rounded,
+                  onTap: () {
+                    if (!_checkingOut) _startCheckout('plan');
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Hoverable(
+              onTap: () => setState(() => _stage = _Stage.contact),
+              builder: (h) => Text('or send it to a human, free',
+                  style: AppTheme.body(13.5,
+                      color:
+                          h ? AppTheme.textPrimary : AppTheme.textSecondary,
+                      height: 1.0)),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         if (_planSurface != null)
           Container(
             padding: const EdgeInsets.all(18),
@@ -628,29 +708,31 @@ class _StartScreenState extends State<StartScreen> {
             child:
                 GenUiRead(key: ValueKey(_planSurface), surface: _planSurface!),
           ),
-        const SizedBox(height: 22),
-        Row(
-          children: [
-            _iconChip(
-              _copied ? Icons.check_rounded : Icons.copy_all_rounded,
-              _copied ? 'Copied' : 'Copy as markdown',
-              () async {
-                await Clipboard.setData(ClipboardData(text: _planMarkdown));
-                if (!mounted) return;
-                setState(() => _copied = true);
-                Future.delayed(const Duration(seconds: 2), () {
-                  if (mounted) setState(() => _copied = false);
-                });
-              },
-            ),
-            const Spacer(),
-            PrimaryButton(
-              label: 'Build it with us',
-              icon: Icons.arrow_forward_rounded,
-              onTap: () => setState(() => _stage = _Stage.contact),
-            ),
-          ],
-        ),
+        if (!_planLocked) ...[
+          const SizedBox(height: 22),
+          Row(
+            children: [
+              _iconChip(
+                _copied ? Icons.check_rounded : Icons.copy_all_rounded,
+                _copied ? 'Copied' : 'Copy as markdown',
+                () async {
+                  await Clipboard.setData(ClipboardData(text: _planMarkdown));
+                  if (!mounted) return;
+                  setState(() => _copied = true);
+                  Future.delayed(const Duration(seconds: 2), () {
+                    if (mounted) setState(() => _copied = false);
+                  });
+                },
+              ),
+              const Spacer(),
+              PrimaryButton(
+                label: 'Build it with us',
+                icon: Icons.arrow_forward_rounded,
+                onTap: () => setState(() => _stage = _Stage.contact),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }
@@ -718,7 +800,7 @@ class _StartScreenState extends State<StartScreen> {
                 style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
             const Spacer(),
             Hoverable(
-              onTap: () => setState(() => _stage = _Stage.scoped),
+              onTap: () => setState(() => _stage = _Stage.problem),
               builder: (h) => Text('Restart',
                   style: AppTheme.body(13,
                       color: h ? AppTheme.textPrimary : AppTheme.textMuted,
@@ -750,29 +832,87 @@ class _StartScreenState extends State<StartScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 18),
-        // The living artifact: the brief, updated every turn.
+        const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Text(
+            'Every answer below makes it sharper. You see the outline before paying.',
+            style: AppTheme.body(12, color: AppTheme.textMuted, height: 1.2),
+          ),
+        ),
+        const SizedBox(height: 14),
+        // The living artifact: the brief, updated every turn. Height-capped
+        // with its own scroll so the conversation (the engagement surface)
+        // never falls below the fold.
         if (_artifact != null)
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: ShapeDecoration(
-              color: AppTheme.background.withValues(alpha: 0.4),
-              shape: RoundedSuperellipseBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: AppTheme.border),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 280),
+            child: Container(
+              padding: const EdgeInsets.all(18),
+              decoration: ShapeDecoration(
+                color: AppTheme.background.withValues(alpha: 0.4),
+                shape: RoundedSuperellipseBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: BorderSide(color: AppTheme.border),
+                ),
+              ),
+              child: SingleChildScrollView(
+                child:
+                    GenUiRead(key: ValueKey(_artifact), surface: _artifact!),
               ),
             ),
-            child: GenUiRead(key: ValueKey(_artifact), surface: _artifact!),
           ),
         const SizedBox(height: 22),
-        // The dialogue.
-        for (final m in _chat) ...[
-          _chatBubble(m['role'] ?? 'ai', m['text'] ?? ''),
+        // The dialogue: history dims, the live question owns the card.
+        for (var i = 0; i < _chat.length; i++) ...[
+          if (i == _chat.length - 1 && _chat[i]['role'] == 'ai' && !_sending)
+            _liveQuestion(_chat[i]['text'] ?? '')
+          else
+            Opacity(
+              opacity: i >= _chat.length - 2 ? 1 : 0.55,
+              child:
+                  _chatBubble(_chat[i]['role'] ?? 'ai', _chat[i]['text'] ?? ''),
+            ),
           const SizedBox(height: 12),
         ],
         if (_sending) ...[
           _chatBubble('ai', 'Thinking...'),
           const SizedBox(height: 12),
+        ],
+        // One-tap answers: proper answer buttons, not tags.
+        if (!_sending && _choices.isNotEmpty) ...[
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (final c in _choices)
+                Hoverable(
+                  onTap: () => _sendChoice(c),
+                  builder: (h) => Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 13),
+                    decoration: ShapeDecoration(
+                      color: h
+                          ? AppTheme.purple.withValues(alpha: 0.28)
+                          : AppTheme.purple.withValues(alpha: 0.14),
+                      shape: RoundedSuperellipseBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: BorderSide(
+                            color: AppTheme.purple
+                                .withValues(alpha: h ? 0.8 : 0.5),
+                            width: 1.2),
+                      ),
+                    ),
+                    child: Text(c,
+                        style: AppTheme.body(15,
+                                color: h ? Colors.white : AppTheme.purpleBright,
+                                height: 1.0)
+                            .copyWith(fontWeight: FontWeight.w600)),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
         ],
         if (_files.isNotEmpty) ...[
           const SizedBox(height: 2),
@@ -786,6 +926,42 @@ class _StartScreenState extends State<StartScreen> {
               style: AppTheme.body(14, color: const Color(0xFFFF8585))),
         ],
       ],
+    );
+  }
+
+  /// The AI's latest turn, rendered as THE question rather than one more
+  /// bubble: context line muted, the question itself large and bright.
+  Widget _liveQuestion(String text) {
+    var lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    var question = lines.isEmpty ? text : lines.removeLast();
+    // Single-line replies carry reaction + question together: split at the
+    // last sentence break before the question.
+    if (lines.isEmpty && question.endsWith('?')) {
+      final idx = question.lastIndexOf(RegExp(r'[.!…]'));
+      if (idx > 12 && idx < question.length - 8) {
+        lines = [question.substring(0, idx + 1).trim()];
+        question = question.substring(idx + 1).trim();
+      }
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (lines.isNotEmpty) ...[
+            Text(lines.join('\n'),
+                style: AppTheme.body(14.5,
+                    color: AppTheme.textSecondary, height: 1.5)),
+            const SizedBox(height: 10),
+          ],
+          Text(question,
+              style: AppTheme.heading(20, color: AppTheme.textPrimary)),
+        ],
+      ),
     );
   }
 
@@ -867,7 +1043,7 @@ class _StartScreenState extends State<StartScreen> {
             style: AppTheme.body(15, color: AppTheme.textPrimary, height: 1.45),
             onSubmitted: (_) => _sendRefine(),
             decoration: InputDecoration(
-              hintText: 'Add detail, correct us, or ask a question...',
+              hintText: 'Answer, push back, or ask me something...',
               hintStyle: AppTheme.body(14.5, color: AppTheme.textMuted),
               border: InputBorder.none,
               contentPadding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
@@ -970,7 +1146,9 @@ class _StartScreenState extends State<StartScreen> {
         children: [
           Text('Where do we send your brief?', style: AppTheme.heading(26)),
           const SizedBox(height: 10),
-          Text('A human reviews every brief. No spam, no autoresponders.',
+          Text(
+              'A real person reads it and replies, usually within a day. '
+              'No spam, no autoresponders.',
               style: AppTheme.body(15)),
           const SizedBox(height: 26),
           _field(_name, 'Your name', hint: 'Jane Rivera', validator: _required),

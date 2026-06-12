@@ -91,9 +91,10 @@ class PortalService {
   }
 
   /// The hardened Build Plan artifact (loop 1: generate, independent critique,
-  /// one revision). Slow by design (a few minutes); returns null on failure
-  /// because a paid artifact gets a retry, never a canned fallback.
-  /// Shape: {surface, markdown, verdict, needsReview, door}.
+  /// one revision). Slow by design; returns null on failure because a paid
+  /// artifact gets a retry, never a canned fallback.
+  /// Shape: {planId, locked, surface, markdown, verdict, needsReview, door,
+  /// prices?}. When the paywall is live, `surface` is the locked preview.
   Future<Map<String, Object?>?> plan(String problem,
       List<Map<String, Object?>> history, List<Map<String, Object?>> files) async {
     try {
@@ -101,6 +102,35 @@ class PortalService {
         '/portal/plan',
         {'problem': problem, 'history': history, 'files': files},
         timeout: const Duration(seconds: 300),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Start a Stripe Checkout for a stored plan. Returns the hosted payment
+  /// URL, or null when payments are unavailable.
+  Future<String?> checkout(String planId, String tier) async {
+    try {
+      final res = await _postJson(
+        '/portal/checkout',
+        {'planId': planId, 'tier': tier},
+        timeout: const Duration(seconds: 30),
+      );
+      final url = res['url'];
+      return url is String && url.isNotEmpty ? url : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Verify payment and fetch the full artifact after the checkout redirect.
+  Future<Map<String, Object?>?> unlock(String planId, String cs) async {
+    try {
+      return await _postJson(
+        '/portal/unlock',
+        {'planId': planId, 'cs': cs},
+        timeout: const Duration(seconds: 30),
       );
     } catch (_) {
       return null;
