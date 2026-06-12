@@ -14,13 +14,14 @@ import '../widgets/starfield.dart';
 import '../widgets/ui.dart';
 import '../widgets/genui_read.dart';
 
-/// The portal, running the WeirdBrains Method: READ the problem, HONE it over
-/// a back-and-forth (voice and files throughout), then generate the PLAN, a
-/// hardened build-plan artifact (drafted, independently critiqued by a second
-/// model, revised once). Either path hands off to a human. State flows:
-///   problem -> thinking -> scoped -> conversation -> (planning -> plan) ->
-///   contact -> done
-enum _Stage { problem, thinking, scoped, conversation, planning, plan, contact, done }
+/// The portal, running the WeirdBrains Method: describe the problem, HONE it
+/// over a back-and-forth (voice and files throughout), then generate the
+/// PLAN, a hardened build-plan artifact (drafted, independently critiqued by
+/// a second model, revised once). Either path hands off to a human. The old
+/// "first-pass read" interstitial is gone: the conversation opener proves
+/// understanding and asks the first question in one beat. State flows:
+///   problem -> conversation -> (planning -> plan) -> contact -> done
+enum _Stage { problem, conversation, planning, plan, contact, done }
 
 class StartScreen extends StatefulWidget {
   const StartScreen({super.key, this.unlockPlanId, this.checkoutSession});
@@ -49,7 +50,6 @@ class _StartScreenState extends State<StartScreen> {
   String _preVoiceText = '';
 
   _Stage _stage = _Stage.problem;
-  Map<String, Object?>? _readSurface;
   final List<Map<String, String>> _chat = []; // [{role: 'user'|'ai', text}]
   List<String> _choices = const []; // one-tap answers for the last AI question
   Map<String, Object?>? _artifact; // the living brief, updated each turn
@@ -169,7 +169,10 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  Future<void> _readProblem() async {
+  /// Straight from the problem into the conversation: the opener turn proves
+  /// the machine understood (mirror) and starts the ping-pong (question) in
+  /// a single wait.
+  Future<void> _beginHoning() async {
     if (!_problemValid) {
       setState(() => _error = 'Give us a sentence or two so we can read it.');
       return;
@@ -178,14 +181,13 @@ class _StartScreenState extends State<StartScreen> {
     setState(() {
       _listening = false;
       _error = null;
-      _stage = _Stage.thinking;
+      _artifact = null;
+      _chat.clear();
+      _choices = const [];
+      _sending = true;
+      _stage = _Stage.conversation;
     });
-    final surface = await const PortalService().read(_problem.text.trim());
-    if (!mounted) return;
-    setState(() {
-      _readSurface = surface;
-      _stage = _Stage.scoped;
-    });
+    _openerTurn();
   }
 
   Future<void> _submit() async {
@@ -266,8 +268,6 @@ class _StartScreenState extends State<StartScreen> {
       ),
       child: switch (_stage) {
         _Stage.problem => _problemStage(),
-        _Stage.thinking => _loadingStage('Reading your problem...'),
-        _Stage.scoped => _scopedStage(),
         _Stage.conversation => _conversationStage(),
         _Stage.planning => _planningStage(),
         _Stage.plan => _planStage(),
@@ -340,9 +340,9 @@ class _StartScreenState extends State<StartScreen> {
           children: [
             const Spacer(),
             PrimaryButton(
-              label: 'Continue',
+              label: 'Sharpen my problem',
               icon: Icons.arrow_forward_rounded,
-              onTap: _readProblem,
+              onTap: _beginHoning,
             ),
           ],
         ),
@@ -431,79 +431,7 @@ class _StartScreenState extends State<StartScreen> {
     );
   }
 
-  // ---- Loading ----
-  Widget _loadingStage(String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 28),
-      child: Row(
-        children: [
-          const SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(
-                strokeWidth: 2, color: AppTheme.purpleBright),
-          ),
-          const SizedBox(width: 14),
-          Flexible(
-            child: Text(label,
-                style: AppTheme.heading(18, color: AppTheme.textSecondary)),
-          ),
-        ],
-      ),
-    );
-  }
 
-  // ---- Stage 3: the agent's read (generated server-side, rendered via GenUI) ----
-  Widget _scopedStage() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.gold),
-            const SizedBox(width: 10),
-            Text('First-pass read',
-                style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
-          ],
-        ),
-        const SizedBox(height: 16),
-        GenUiRead(key: ValueKey(_readSurface), surface: _readSurface!),
-        const SizedBox(height: 26),
-        Row(
-          children: [
-            Hoverable(
-              onTap: () => setState(() => _stage = _Stage.problem),
-              builder: (h) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                child: Text('Edit',
-                    style: AppTheme.body(15,
-                        color: h ? AppTheme.textPrimary : AppTheme.textSecondary,
-                        height: 1.0)),
-              ),
-            ),
-            const Spacer(),
-            PrimaryButton(
-              label: 'Sharpen my problem',
-              icon: Icons.arrow_forward_rounded,
-              onTap: _startConversation,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ---- Stage 4: ping-pong refinement (artifact + chat) ----
-  void _startConversation() {
-    setState(() {
-      _artifact = _readSurface;
-      _chat.clear();
-      _error = null;
-      _sending = true;
-      _stage = _Stage.conversation;
-    });
-    _openerTurn();
-  }
 
   /// The AI opens the conversation with its first sharp question instead of
   /// waiting passively: ping-pong starts on turn zero.
@@ -872,7 +800,7 @@ class _StartScreenState extends State<StartScreen> {
                 style: AppTheme.eyebrow().copyWith(color: AppTheme.gold)),
             const Spacer(),
             Hoverable(
-              onTap: () => setState(() => _stage = _Stage.scoped),
+              onTap: () => setState(() => _stage = _Stage.problem),
               builder: (h) => Text('Restart',
                   style: AppTheme.body(13,
                       color: h ? AppTheme.textPrimary : AppTheme.textMuted,
